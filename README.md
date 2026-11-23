@@ -24,3 +24,15 @@ dotnet publish FerdiumPlus/FerdiumPlus.csproj -c Release -r win-x64 --self-conta
   -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
   -p:EnableCompressionInSingleFile=true -p:DebugType=none -p:DebugSymbols=false -o dist
 ```
+
+## Releases
+
+Automated Windows x64 production builds and installers are generated via [`.github/workflows/release.yml`](.github/workflows/release.yml):
+
+- **Tag-triggered release**: Push a version tag starting with `v` (e.g., `git tag v1.0.0 && git push origin v1.0.0`). GitHub Actions will run all unit tests, build the standalone portable executable and the Inno Setup installer, generate `SHA256SUMS.txt`, and publish a GitHub Release automatically. Tags containing a hyphen (e.g., `v1.0.0-beta.1`) are automatically marked as pre-releases.
+- **Manual run**: Trigger the **Release** workflow from the GitHub Actions tab (`workflow_dispatch`) to produce downloadable build artifacts or optionally publish a release.
+
+### Release Assets
+- `FerdiumPlus-Setup-<version>-win-x64.exe` — Windows Setup installer (Inno Setup, per-user or all-users install, Start Menu / optional Desktop & Startup shortcuts)
+- `FerdiumPlus-<version>-win-x64-portable.exe` — Standalone single-file portable executable
+- `SHA256SUMS.txt` — SHA-256 checksums for all assets
