@@ -3,11 +3,11 @@
 ;   ISCC.exe /DMyAppVersion="1.0.0" /DSourceDir="..\publish\app" /DOutputDir="..\release-assets" /DOutputBaseFilename="FerdiumPlus-Setup-1.0.0-win-x64" installer\FerdiumPlus.iss
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0"
+  #define MyAppVersion "1.1.0"
 #endif
 
 #ifndef MyAppNumericVersion
-  #define MyAppNumericVersion "1.0.0.0"
+  #define MyAppNumericVersion "1.1.0.0"
 #endif
 
 #ifndef SourceDir

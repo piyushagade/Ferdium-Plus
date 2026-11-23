@@ -12,6 +12,9 @@
     <Product>Ferdium Plus</Product>
     <Title>Ferdium Plus</Title>
     <AssemblyTitle>Ferdium Plus</AssemblyTitle>
+    <Version>1.1.0</Version>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
     <ApplicationIcon>Assets\app-icon.ico</ApplicationIcon>
   </PropertyGroup>
 
