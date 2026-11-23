@@ -776,4 +776,18 @@ public sealed class FerdiumWpfTests : IDisposable
         await vm.LockServicesOnSystemSuspendAsync();
         Assert.True(svc.IsLocked);
     }
+
+    [Fact]
+    public void SingleInstanceService_BlocksSecondInstanceAndSignalsPrimary()
+    {
+        var uniqueKey = $"FerdiumPlus.Test.{Guid.NewGuid():N}";
+        using var activated = new ManualResetEventSlim(false);
+
+        using var primary = new SingleInstanceService(uniqueKey, () => activated.Set());
+        Assert.True(primary.IsPrimaryInstance);
+
+        using var secondary = new SingleInstanceService(uniqueKey);
+        Assert.False(secondary.IsPrimaryInstance);
+        Assert.True(activated.Wait(TimeSpan.FromSeconds(2)));
+    }
 }

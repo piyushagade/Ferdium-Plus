@@ -471,6 +471,26 @@ public sealed class WebViewHostManager : IDisposable
         }
     }
 
+    public void ResumeActiveService()
+    {
+        if (string.IsNullOrEmpty(_activeServiceId)) return;
+        if (_webViews.TryGetValue(_activeServiceId, out var webView))
+        {
+            webView.Visibility = Visibility.Visible;
+            if (_initialized.GetValueOrDefault(_activeServiceId) && webView.CoreWebView2 is not null)
+            {
+                try
+                {
+                    webView.CoreWebView2.Resume();
+                }
+                catch
+                {
+                    // Safe to ignore if already active
+                }
+            }
+        }
+    }
+
     public async Task HibernateServiceAsync(string serviceId, bool trimMemory)
     {
         if (!_webViews.TryGetValue(serviceId, out var webView))
@@ -682,7 +702,7 @@ public sealed class WebViewHostManager : IDisposable
         var profileDir = Path.Combine(_profilesRoot, profileFolderName);
         Directory.CreateDirectory(profileDir);
 
-        var browserArgs = "--enable-features=msWebOOUI,msPdfOOUI";
+        var browserArgs = "--enable-features=msWebOOUI,msPdfOOUI --disable-backgrounding-occluded-windows --disable-renderer-backgrounding";
         if (!_enableGpuAcceleration)
         {
             browserArgs += " --disable-gpu";

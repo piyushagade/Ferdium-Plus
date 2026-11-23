@@ -407,7 +407,7 @@ public partial class MainWindow : FluentWindow
             args.NotificationId);
     }
 
-    private void RestoreFromTray()
+    public void RestoreFromTray()
     {
         Show();
         if (WindowState == WindowState.Minimized)
@@ -415,7 +415,11 @@ public partial class MainWindow : FluentWindow
             WindowState = WindowState.Normal;
         }
 
+        // Briefly toggle Topmost so Windows brings the window reliably to the foreground
+        Topmost = true;
+        Topmost = false;
         Activate();
+        _webViewManager.ResumeActiveService();
     }
 
     private void MainWindow_Closing(object? sender, CancelEventArgs e)

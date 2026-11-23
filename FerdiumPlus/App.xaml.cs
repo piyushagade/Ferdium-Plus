@@ -1,11 +1,14 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Threading;
+using FerdiumApp.Services;
 
 namespace FerdiumApp;
 
 public partial class App : Application
 {
+    private SingleInstanceService? _singleInstance;
+
     public App()
     {
         MigrateLegacyDataFolderIfNeeded(Environment.SpecialFolder.ApplicationData);
@@ -13,6 +16,46 @@ public partial class App : Application
 
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
+    }
+
+    protected override void OnStartup(StartupEventArgs e)
+    {
+        base.OnStartup(e);
+
+        _singleInstance = new SingleInstanceService(
+            appKey: "FerdiumPlus.SingleInstance",
+            onActivationRequested: () =>
+            {
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (MainWindow is MainWindow mainWin)
+                    {
+                        mainWin.RestoreFromTray();
+                    }
+                    else
+                    {
+                        MainWindow?.Show();
+                        MainWindow?.Activate();
+                    }
+                });
+            });
+
+        if (!_singleInstance.IsPrimaryInstance)
+        {
+            Shutdown(0);
+            return;
+        }
+
+        var window = new MainWindow();
+        MainWindow = window;
+        window.Show();
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        _singleInstance?.Dispose();
+        _singleInstance = null;
+        base.OnExit(e);
     }
 
     private static void MigrateLegacyDataFolderIfNeeded(Environment.SpecialFolder specialFolder)
