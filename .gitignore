@@ -1,0 +1,30 @@
+# Build outputs
+bin/
+obj/
+dist/
+out/
+publish/
+
+# Visual Studio / IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.DotSettings.user
+
+# Test & coverage results
+TestResults/
+coverage/
+*.trx
+*.coverage
+*.coveragexml
+
+# Windows / OS artifacts
+Thumbs.db
+Desktop.ini
+*.lnk
+*.log
+*.tmp

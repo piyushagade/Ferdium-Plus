@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FerdiumPlus", "FerdiumPlus\FerdiumPlus.csproj", "{C9C07FAA-2ABE-4CC6-88B3-DBC3BA576A4D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FerdiumPlus.Tests", "FerdiumPlus.Tests\FerdiumPlus.Tests.csproj", "{33D83928-8991-4C85-BBB7-BBC466B7287C}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C9C07FAA-2ABE-4CC6-88B3-DBC3BA576A4D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C9C07FAA-2ABE-4CC6-88B3-DBC3BA576A4D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C9C07FAA-2ABE-4CC6-88B3-DBC3BA576A4D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C9C07FAA-2ABE-4CC6-88B3-DBC3BA576A4D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{33D83928-8991-4C85-BBB7-BBC466B7287C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{33D83928-8991-4C85-BBB7-BBC466B7287C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{33D83928-8991-4C85-BBB7-BBC466B7287C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{33D83928-8991-4C85-BBB7-BBC466B7287C}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
