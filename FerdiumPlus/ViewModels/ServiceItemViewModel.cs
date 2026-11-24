@@ -92,9 +92,27 @@ public sealed partial class ServiceItemViewModel : ObservableObject
     public bool CanLockNow => HasLockConfigured && !IsLocked;
     public bool HasSharedSession => !string.IsNullOrEmpty(SessionBadgeLabel);
 
-    public double DragOpacity => IsDragging ? 0.45 : 1.0;
+    public double DragOpacity => IsDragging ? 0.45 : (Config.IsEnabled ? 1.0 : 0.42);
+
+    public bool IsEnabled
+    {
+        get => Config.IsEnabled;
+        set
+        {
+            if (Config.IsEnabled == value) return;
+            Config.IsEnabled = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(DragOpacity));
+            OnPropertyChanged(nameof(EnableMenuLabel));
+            OnPropertyChanged(nameof(StatusLabel));
+        }
+    }
+
+    public string EnableMenuLabel => Config.IsEnabled ? "Disable Service" : "Enable Service";
 
     public DateTime LastUsedUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? LastHibernatedUtc { get; set; }
+    public DateTime? WokenInBackgroundUtc { get; set; }
 
     public bool IsHibernated => !IsLoaded;
     public bool HasBadge => !Config.HideUnreadBadge && UnreadCount > 0;
@@ -108,6 +126,11 @@ public sealed partial class ServiceItemViewModel : ObservableObject
     {
         get
         {
+            if (!Config.IsEnabled)
+            {
+                return "Disabled";
+            }
+
             if (IsLocked)
             {
                 return "Locked";

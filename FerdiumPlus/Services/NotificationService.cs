@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Toolkit.Uwp.Notifications;
@@ -45,7 +46,8 @@ public sealed class NotificationService : IDisposable
         bool isSilent,
         bool privateNotifications,
         string? tag,
-        string? notificationId)
+        string? notificationId,
+        string? iconFilePath = null)
     {
         var formatted = FormatNotification(serviceName, title, body, privateNotifications);
 
@@ -57,6 +59,11 @@ public sealed class NotificationService : IDisposable
             if (!string.IsNullOrWhiteSpace(notificationId))
             {
                 builder.AddArgument("notificationId", notificationId);
+            }
+
+            if (!string.IsNullOrWhiteSpace(iconFilePath) && File.Exists(iconFilePath))
+            {
+                builder.AddAppLogoOverride(new Uri(iconFilePath), ToastGenericAppLogoCrop.Default);
             }
 
             builder.AddText(formatted.Title);

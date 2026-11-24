@@ -740,12 +740,25 @@ public sealed class FerdiumWpfTests : IDisposable
         Assert.Equal(5, svc.Config.AutoLockMinutes);
         Assert.True(svc.Config.RelockOnMinimize);
         Assert.True(svc.Config.RelockOnSystemSuspend);
+        Assert.False(svc.Config.HideNotificationContentWhenLocked);
+        Assert.False(svc.Config.ShouldMaskNotificationPreview(globalPrivateNotifications: false, isLocked: true));
         Assert.True(vm.CanQuickLockActiveService);
 
-        // Quick-Lock button locks active service & hides its WebView
+        // Enabling HideNotificationContentWhenLocked masks previews only while locked
+        vm.OpenEditService(svc);
+        vm.EditHideNotificationContentWhenLocked = true;
+        await vm.SaveEditServiceAsync();
+        Assert.True(svc.Config.HideNotificationContentWhenLocked);
+        Assert.True(svc.Config.ShouldMaskNotificationPreview(globalPrivateNotifications: false, isLocked: true));
+        Assert.False(svc.Config.ShouldMaskNotificationPreview(globalPrivateNotifications: false, isLocked: false));
+
+        // Quick-Lock button locks active service, hides its WebView, and shows inline locked UI (not empty state)
         await vm.LockActiveServiceAsync();
         Assert.True(svc.IsLocked);
         Assert.Null(vm.ActiveService);
+        Assert.True(vm.ShowLockedPane);
+        Assert.False(vm.ShowEmptyState);
+        Assert.Equal(svc.Id, vm.LockedDisplayService?.Id);
         Assert.False(vm.CanQuickLockActiveService);
         Assert.Contains(svc.Id, hiddenIds);
 
@@ -754,6 +767,7 @@ public sealed class FerdiumWpfTests : IDisposable
         vm.UnlockSecretInput = "1357";
         await vm.SubmitServiceUnlockAsync();
         Assert.False(svc.IsLocked);
+        Assert.False(vm.ShowLockedPane);
 
         svc.LastUsedUtc = DateTime.UtcNow.AddMinutes(-3);
         await vm.CheckAutoLockAsync();
@@ -762,6 +776,8 @@ public sealed class FerdiumWpfTests : IDisposable
         svc.LastUsedUtc = DateTime.UtcNow.AddMinutes(-6);
         await vm.CheckAutoLockAsync();
         Assert.True(svc.IsLocked);
+        Assert.True(vm.ShowLockedPane);
+        Assert.False(vm.ShowEmptyState);
 
         // Unlock and verify RelockOnMinimize + RelockOnSystemSuspend
         vm.UnlockTargetService = svc;
@@ -778,6 +794,92 @@ public sealed class FerdiumWpfTests : IDisposable
     }
 
     [Fact]
+    public async Task AutoLock_DoesNotLockWhileActivelyUsingForegroundService_AndStartsTimerOnSwitchAway()
+    {
+        var statePath = Path.Combine(_tempDir, "autolock-active-state.json");
+        var vm = new MainWindowViewModel(
+            new SettingsPersistenceService(statePath),
+            new ServiceCatalogService());
+
+        var first = vm.AllServices[0];
+        var second = vm.AllServices[1];
+        await vm.ActivateServiceAsync(first);
+
+        vm.OpenEditService(first);
+        vm.EditLockModeIndex = (int)ServiceLockMode.Passcode;
+        vm.EditLockSecret = "2468";
+        vm.EditLockSecretConfirm = "2468";
+        vm.SetEditAutoLockMinutes("5");
+        await vm.SaveEditServiceAsync();
+
+        // Simulate sitting on 'first' for 15 minutes while actively typing/moving mouse (idle = 10s)
+        var now = DateTime.UtcNow;
+        first.LastUsedUtc = now.AddMinutes(-15);
+        await vm.CheckAutoLockAsync(utcNow: now, isAppForeground: true, userIdleDuration: TimeSpan.FromSeconds(10));
+        Assert.False(first.IsLocked);
+
+        // If the user walks away from the keyboard for 6 minutes while still on 'first', it locks
+        await vm.CheckAutoLockAsync(utcNow: now, isAppForeground: true, userIdleDuration: TimeSpan.FromMinutes(6));
+        Assert.True(first.IsLocked);
+
+        // Unlock 'first', stay on it, then switch away to 'second': timer starts from the switch-away time
+        vm.UnlockTargetService = first;
+        vm.UnlockSecretInput = "2468";
+        await vm.SubmitServiceUnlockAsync();
+        Assert.False(first.IsLocked);
+
+        first.LastUsedUtc = DateTime.UtcNow.AddMinutes(-20);
+        await vm.ActivateServiceAsync(second);
+
+        // Immediately after switching away, 'first' should NOT be due to lock yet
+        await vm.CheckAutoLockAsync(utcNow: DateTime.UtcNow.AddMinutes(2), isAppForeground: true, userIdleDuration: TimeSpan.Zero);
+        Assert.False(first.IsLocked);
+
+        // 6 minutes after switching away, 'first' locks even while user is actively using 'second'
+        await vm.CheckAutoLockAsync(utcNow: DateTime.UtcNow.AddMinutes(6), isAppForeground: true, userIdleDuration: TimeSpan.Zero);
+        Assert.True(first.IsLocked);
+    }
+
+    [Fact]
+    public async Task LockedService_WithLoadOnStartup_PreloadsInBackgroundWhileStayingLocked()
+    {
+        var statePath = Path.Combine(_tempDir, "locked-preload-state.json");
+        var persistence = new SettingsPersistenceService(statePath);
+        var vm = new MainWindowViewModel(persistence, new ServiceCatalogService());
+
+        var lockedSvc = vm.AllServices[0];
+        vm.OpenEditService(lockedSvc);
+        vm.EditLoadOnStartup = true;
+        vm.EditLockModeIndex = (int)ServiceLockMode.Passcode;
+        vm.EditLockSecret = "1234";
+        vm.EditLockSecretConfirm = "1234";
+        await vm.SaveEditServiceAsync();
+
+        // Simulate fresh app startup
+        var startupVm = new MainWindowViewModel(persistence, new ServiceCatalogService());
+        var activatedIds = new List<string>();
+        var preloadedIds = new List<string>();
+
+        startupVm.ServiceActivationRequested += (cfg, _, _) =>
+        {
+            activatedIds.Add(cfg.Id);
+            return Task.CompletedTask;
+        };
+        startupVm.ServiceBackgroundPreloadRequested += (cfg, _) =>
+        {
+            preloadedIds.Add(cfg.Id);
+            return Task.CompletedTask;
+        };
+
+        await startupVm.InitializeActiveServiceAsync();
+
+        var reloadedLocked = startupVm.AllServices.First(s => s.Id == lockedSvc.Id);
+        Assert.True(reloadedLocked.IsLocked);
+        Assert.Contains(lockedSvc.Id, preloadedIds);
+        Assert.DoesNotContain(lockedSvc.Id, activatedIds);
+    }
+
+    [Fact]
     public void SingleInstanceService_BlocksSecondInstanceAndSignalsPrimary()
     {
         var uniqueKey = $"FerdiumPlus.Test.{Guid.NewGuid():N}";
@@ -789,5 +891,114 @@ public sealed class FerdiumWpfTests : IDisposable
         using var secondary = new SingleInstanceService(uniqueKey);
         Assert.False(secondary.IsPrimaryInstance);
         Assert.True(activated.Wait(TimeSpan.FromSeconds(2)));
+    }
+
+    [Fact]
+    public void PrivacyAndShellHelpers_2faSearchTranslateAndShortcuts_WorkCorrectly()
+    {
+        Assert.True(PrivacyAndShellHelpers.TryExtractTwoFactorCode(
+            "Security Alert", "Your verification code is 482913", "token, code, sms, verify", out var otp));
+        Assert.Equal("482913", otp);
+
+        Assert.False(PrivacyAndShellHelpers.TryExtractTwoFactorCode(
+            "Newsletter", "Order 482913 shipped", "token, code, sms, verify", out _));
+
+        Assert.Contains("duckduckgo.com", PrivacyAndShellHelpers.BuildSearchUrl("wpf webview2", "duckDuckGo"));
+        Assert.Contains("google.com/search", PrivacyAndShellHelpers.BuildSearchUrl("wpf", "google"));
+        Assert.Contains("translate.google.com", PrivacyAndShellHelpers.BuildTranslateUrl("hello", "Google", "fr"));
+        Assert.Contains("translator.ferdium.org", PrivacyAndShellHelpers.BuildTranslateUrl("hello", "LibreTranslate", "de"));
+
+        Assert.True(PrivacyAndShellHelpers.MatchesShortcut(
+            System.Windows.Input.Key.Tab, System.Windows.Input.ModifierKeys.Control, "Ctrl+Tab"));
+        Assert.True(PrivacyAndShellHelpers.MatchesShortcut(
+            System.Windows.Input.Key.Tab, System.Windows.Input.ModifierKeys.Control | System.Windows.Input.ModifierKeys.Shift, "Ctrl+Shift+Tab"));
+        Assert.True(PrivacyAndShellHelpers.LooksLikeSearchQuery("how to build wpf"));
+        Assert.False(PrivacyAndShellHelpers.LooksLikeSearchQuery("https://example.com"));
+    }
+
+    [Fact]
+    public async Task SettingsWiring_DefaultsSandboxDisabledServicesAndAppLock_WorkCorrectly()
+    {
+        var defaults = new AppSettings();
+        Assert.Equal("never", defaults.NavigationBarBehaviour);
+        Assert.Equal(55, defaults.ServiceRibbonWidth);
+        Assert.Equal(0, defaults.WebviewPaddingSize);
+        Assert.Equal(8, defaults.ServiceWebviewBorderRadius);
+        Assert.Equal("center", defaults.SidebarServicesLocation);
+
+        var svc = new ServiceConfig { Id = "svc1", SessionProfileKey = null };
+        Assert.Equal("svc1", WebViewHostManager.ResolveProfileFolderName(svc, sandboxServices: true));
+        Assert.Equal("_shared", WebViewHostManager.ResolveProfileFolderName(svc, sandboxServices: false));
+
+        var statePath = Path.Combine(_tempDir, "all-settings-wiring.json");
+        var vm = new MainWindowViewModel(new SettingsPersistenceService(statePath), new ServiceCatalogService());
+
+        // ShowDisabledServices filtering
+        var initialCount = vm.VisibleServices.Count;
+        await vm.ToggleServiceEnabledAsync(vm.AllServices[0]);
+        vm.ShowDisabledServices = false;
+        Assert.Equal(initialCount - 1, vm.VisibleServices.Count);
+        vm.ShowDisabledServices = true;
+        Assert.Equal(initialCount, vm.VisibleServices.Count);
+
+        // App Lock password hashing + lock/unlock
+        vm.IsLockingFeatureEnabled = true;
+        vm.NewAppLockPassword = "my-secret-password";
+        vm.SaveAppLockPassword();
+        Assert.True(vm.HasAppLockPassword);
+        vm.LockApp();
+        Assert.True(vm.IsAppLocked);
+        vm.AppLockPasswordInput = "wrong";
+        vm.UnlockApp();
+        Assert.True(vm.IsAppLocked);
+        vm.AppLockPasswordInput = "my-secret-password";
+        vm.UnlockApp();
+        Assert.False(vm.IsAppLocked);
+    }
+
+    [Fact]
+    public void BrowserExtensionService_ApplyLifecyclePopupGuard_WrapsMv3AndMv2BackgroundsIdempotently()
+    {
+        // 1. MV3 classic service worker
+        var mv3Classic = Path.Combine(_tempDir, "ext-mv3-classic");
+        Directory.CreateDirectory(Path.Combine(mv3Classic, "bg"));
+        File.WriteAllText(Path.Combine(mv3Classic, "bg", "worker.js"), "console.log('classic');");
+        File.WriteAllText(
+            Path.Combine(mv3Classic, "manifest.json"),
+            """{"manifest_version":3,"name":"Test","version":"1.0","background":{"service_worker":"bg/worker.js"}}""");
+
+        BrowserExtensionService.ApplyLifecyclePopupGuard(mv3Classic);
+        BrowserExtensionService.ApplyLifecyclePopupGuard(mv3Classic); // idempotent
+
+        Assert.True(File.Exists(Path.Combine(mv3Classic, "ferdium-lifecycle-guard.js")));
+        var classicSw = File.ReadAllText(Path.Combine(mv3Classic, "bg", "worker.js"));
+        Assert.StartsWith("importScripts('/ferdium-lifecycle-guard.js');", classicSw);
+        Assert.Equal(1, classicSw.Split("ferdium-lifecycle-guard.js").Length - 1);
+        Assert.Contains("\"service_worker\":\"bg/worker.js\"", File.ReadAllText(Path.Combine(mv3Classic, "manifest.json")));
+
+        // 2. MV3 ES module service worker
+        var mv3Module = Path.Combine(_tempDir, "ext-mv3-module");
+        Directory.CreateDirectory(mv3Module);
+        File.WriteAllText(Path.Combine(mv3Module, "background.js"), "console.log('module');");
+        File.WriteAllText(
+            Path.Combine(mv3Module, "manifest.json"),
+            """{"manifest_version":3,"name":"Test","version":"1.0","background":{"service_worker":"background.js","type":"module"}}""");
+
+        BrowserExtensionService.ApplyLifecyclePopupGuard(mv3Module);
+        var moduleSw = File.ReadAllText(Path.Combine(mv3Module, "background.js"));
+        Assert.StartsWith("import '/ferdium-lifecycle-guard.js';", moduleSw);
+
+        // 3. MV2 background.scripts
+        var mv2Dir = Path.Combine(_tempDir, "ext-mv2");
+        Directory.CreateDirectory(mv2Dir);
+        File.WriteAllText(
+            Path.Combine(mv2Dir, "manifest.json"),
+            """{"manifest_version":2,"name":"Test","version":"1.0","background":{"scripts":["background.js"]}}""");
+
+        BrowserExtensionService.ApplyLifecyclePopupGuard(mv2Dir);
+        BrowserExtensionService.ApplyLifecyclePopupGuard(mv2Dir); // idempotent
+        var mv2Manifest = File.ReadAllText(Path.Combine(mv2Dir, "manifest.json"));
+        Assert.Contains("ferdium-lifecycle-guard.js", mv2Manifest);
+        Assert.Equal(1, mv2Manifest.Split("ferdium-lifecycle-guard.js").Length - 1);
     }
 }

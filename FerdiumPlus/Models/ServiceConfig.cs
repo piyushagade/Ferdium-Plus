@@ -42,6 +42,7 @@ public sealed class ServiceConfig
     public int AutoLockMinutes { get; set; } = 5;
     public bool RelockOnMinimize { get; set; } = false;
     public bool RelockOnSystemSuspend { get; set; } = true;
+    public bool HideNotificationContentWhenLocked { get; set; } = false;
 
     /// <summary>
     /// Optional shared WebView2 profile key. Null/empty = shared default profile;
@@ -82,4 +83,9 @@ public sealed class ServiceConfig
     public bool IsAudioEffectivelyMuted => IsMuted || MuteAudio;
 
     public bool HasLockConfigured => LockMode != ServiceLockMode.None;
+
+    public bool ShouldMaskNotificationPreview(bool globalPrivateNotifications, bool isLocked) =>
+        globalPrivateNotifications
+        || HideNotificationPreview
+        || (isLocked && HideNotificationContentWhenLocked);
 }

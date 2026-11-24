@@ -1,4 +1,7 @@
+using System.IO;
+using System.Net.Http;
 using System.Reflection;
+using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using FerdiumApp.Models;
@@ -10,8 +13,15 @@ public sealed record SettingOption<T>(T Value, string Label);
 
 public sealed partial class MainWindowViewModel
 {
+    private static readonly HttpClient UpdateHttpClient = new()
+    {
+        Timeout = TimeSpan.FromSeconds(10),
+    };
+
     public event Action<AppSettings>? GlobalSettingsChanged;
     public event Action<bool>? TrayVisibilityChanged;
+    public event Action<bool>? GlobalHideShortcutChanged;
+    public event Action<bool, string>? TodosDrawerToggled;
     public event Func<Task>? ClearAllCacheRequested;
     public event Action? BrowseDownloadFolderRequested;
     public event Action? ImportFerdiumFileRequested;
@@ -27,6 +37,29 @@ public sealed partial class MainWindowViewModel
 
     [ObservableProperty]
     private string _updateStatusText = "You are using the latest version of Ferdium.";
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowVerticalSidebar))]
+    [NotifyPropertyChangedFor(nameof(ShowHorizontalSidebar))]
+    private bool _isSidebarCollapsed;
+
+    public bool ShowVerticalSidebar => !IsSidebarCollapsed && !UseHorizontalStyle;
+    public bool ShowHorizontalSidebar => !IsSidebarCollapsed && UseHorizontalStyle;
+
+    [ObservableProperty]
+    private bool _isTodosDrawerOpen;
+
+    [ObservableProperty]
+    private bool _isAppLocked;
+
+    [ObservableProperty]
+    private string _appLockPasswordInput = string.Empty;
+
+    [ObservableProperty]
+    private string _appLockErrorText = string.Empty;
+
+    [ObservableProperty]
+    private string _newAppLockPassword = string.Empty;
 
     public string AppVersionText =>
         Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
@@ -430,6 +463,7 @@ public sealed partial class MainWindowViewModel
             if (_state.Settings.ShowDisabledServices == value) return;
             _state.Settings.ShowDisabledServices = value;
             OnPropertyChanged();
+            RefreshVisibleServices();
             SaveState();
         }
     }
@@ -442,6 +476,7 @@ public sealed partial class MainWindowViewModel
             if (_state.Settings.UseGrayscaleServices == value) return;
             _state.Settings.UseGrayscaleServices = value;
             OnPropertyChanged();
+            OnPropertyChanged(nameof(EffectiveServiceIconDimOpacity));
             SaveState();
         }
     }
@@ -455,9 +490,18 @@ public sealed partial class MainWindowViewModel
             if (_state.Settings.GrayscaleServicesDim == clamped) return;
             _state.Settings.GrayscaleServicesDim = clamped;
             OnPropertyChanged();
+            OnPropertyChanged(nameof(EffectiveServiceIconDimOpacity));
             SaveState();
         }
     }
+
+    public double EffectiveServiceIconDimOpacity =>
+        UseGrayscaleServices ? Math.Clamp(1.0 - (GrayscaleServicesDim / 120.0), 0.25, 1.0) : 1.0;
+
+    public string EffectiveTodoServerUrl =>
+        IsCustomTodoServer && !string.IsNullOrWhiteSpace(CustomTodoServer)
+            ? ServiceCatalogService.NormalizeUrl(CustomTodoServer)
+            : PredefinedTodoServer;
 
     public bool ShowMessageBadgeWhenMuted
     {
@@ -545,7 +589,7 @@ public sealed partial class MainWindowViewModel
         set
         {
             if (_state.Settings.NavigationBarBehaviour == value) return;
-            _state.Settings.NavigationBarBehaviour = value ?? "always";
+            _state.Settings.NavigationBarBehaviour = value ?? "never";
             OnPropertyChanged();
             OnPropertyChanged(nameof(ShowWebControls));
             SaveState();
@@ -627,6 +671,7 @@ public sealed partial class MainWindowViewModel
             _state.Settings.SandboxServices = value;
             OnPropertyChanged();
             SaveState();
+            GlobalSettingsChanged?.Invoke(_state.Settings);
         }
     }
 
@@ -640,6 +685,7 @@ public sealed partial class MainWindowViewModel
             _state.Settings.UniversalDarkMode = value;
             OnPropertyChanged();
             SaveState();
+            GlobalSettingsChanged?.Invoke(_state.Settings);
         }
     }
 
@@ -652,6 +698,7 @@ public sealed partial class MainWindowViewModel
             _state.Settings.SplitMode = value;
             OnPropertyChanged();
             SaveState();
+            GlobalSettingsChanged?.Invoke(_state.Settings);
         }
     }
 
@@ -665,6 +712,7 @@ public sealed partial class MainWindowViewModel
             _state.Settings.SplitColumns = clamped;
             OnPropertyChanged();
             SaveState();
+            GlobalSettingsChanged?.Invoke(_state.Settings);
         }
     }
 
@@ -703,9 +751,12 @@ public sealed partial class MainWindowViewModel
             if (_state.Settings.WebviewPaddingSize == clamped) return;
             _state.Settings.WebviewPaddingSize = clamped;
             OnPropertyChanged();
+            OnPropertyChanged(nameof(EffectiveWebviewPadding));
             SaveState();
         }
     }
+
+    public System.Windows.Thickness EffectiveWebviewPadding => new(WebviewPaddingSize);
 
     public int ServiceWebviewBorderRadius
     {
@@ -716,9 +767,13 @@ public sealed partial class MainWindowViewModel
             if (_state.Settings.ServiceWebviewBorderRadius == clamped) return;
             _state.Settings.ServiceWebviewBorderRadius = clamped;
             OnPropertyChanged();
+            OnPropertyChanged(nameof(EffectiveWebviewCornerRadius));
             SaveState();
         }
     }
+
+    public System.Windows.CornerRadius EffectiveWebviewCornerRadius =>
+        new(ServiceWebviewBorderRadius, 0, 0, 0);
 
     public string SidebarServicesLocation
     {
@@ -726,11 +781,27 @@ public sealed partial class MainWindowViewModel
         set
         {
             if (_state.Settings.SidebarServicesLocation == value) return;
-            _state.Settings.SidebarServicesLocation = value ?? "topLeft";
+            _state.Settings.SidebarServicesLocation = value ?? "center";
             OnPropertyChanged();
+            OnPropertyChanged(nameof(EffectiveSidebarServicesVerticalAlignment));
+            OnPropertyChanged(nameof(EffectiveSidebarServicesHorizontalAlignment));
             SaveState();
         }
     }
+
+    public System.Windows.VerticalAlignment EffectiveSidebarServicesVerticalAlignment => SidebarServicesLocation switch
+    {
+        "center" => System.Windows.VerticalAlignment.Center,
+        "bottomRight" => System.Windows.VerticalAlignment.Bottom,
+        _ => System.Windows.VerticalAlignment.Top,
+    };
+
+    public System.Windows.HorizontalAlignment EffectiveSidebarServicesHorizontalAlignment => SidebarServicesLocation switch
+    {
+        "center" => System.Windows.HorizontalAlignment.Center,
+        "bottomRight" => System.Windows.HorizontalAlignment.Right,
+        _ => System.Windows.HorizontalAlignment.Left,
+    };
 
     public bool UseHorizontalStyle
     {
@@ -740,6 +811,8 @@ public sealed partial class MainWindowViewModel
             if (_state.Settings.UseHorizontalStyle == value) return;
             _state.Settings.UseHorizontalStyle = value;
             OnPropertyChanged();
+            OnPropertyChanged(nameof(ShowVerticalSidebar));
+            OnPropertyChanged(nameof(ShowHorizontalSidebar));
             SaveState();
         }
     }
@@ -935,6 +1008,7 @@ public sealed partial class MainWindowViewModel
             _state.Settings.WebRtcIpHandlingPolicy = value ?? "disable_non_proxied_udp";
             OnPropertyChanged();
             SaveState();
+            GlobalSettingsChanged?.Invoke(_state.Settings);
         }
     }
 
@@ -1009,6 +1083,7 @@ public sealed partial class MainWindowViewModel
             _state.Settings.Locale = value ?? "en-US";
             OnPropertyChanged();
             SaveState();
+            GlobalSettingsChanged?.Invoke(_state.Settings);
         }
     }
 
@@ -1021,6 +1096,7 @@ public sealed partial class MainWindowViewModel
             _state.Settings.EnableSpellchecking = value;
             OnPropertyChanged();
             SaveState();
+            GlobalSettingsChanged?.Invoke(_state.Settings);
         }
     }
 
@@ -1033,6 +1109,7 @@ public sealed partial class MainWindowViewModel
             _state.Settings.SpellcheckerLanguage = value ?? "en-us";
             OnPropertyChanged();
             SaveState();
+            GlobalSettingsChanged?.Invoke(_state.Settings);
         }
     }
 
@@ -1045,6 +1122,7 @@ public sealed partial class MainWindowViewModel
             _state.Settings.EnableTranslator = value;
             OnPropertyChanged();
             SaveState();
+            GlobalSettingsChanged?.Invoke(_state.Settings);
         }
     }
 
@@ -1057,6 +1135,7 @@ public sealed partial class MainWindowViewModel
             _state.Settings.TranslatorEngine = value ?? "LibreTranslate";
             OnPropertyChanged();
             SaveState();
+            GlobalSettingsChanged?.Invoke(_state.Settings);
         }
     }
 
@@ -1069,6 +1148,7 @@ public sealed partial class MainWindowViewModel
             _state.Settings.TranslatorLanguage = value ?? "en";
             OnPropertyChanged();
             SaveState();
+            GlobalSettingsChanged?.Invoke(_state.Settings);
         }
     }
 
@@ -1095,6 +1175,7 @@ public sealed partial class MainWindowViewModel
             _state.Settings.EnableGlobalHideShortcut = value;
             OnPropertyChanged();
             SaveState();
+            GlobalHideShortcutChanged?.Invoke(value);
         }
     }
 
@@ -1264,10 +1345,127 @@ public sealed partial class MainWindowViewModel
     }
 
     [RelayCommand]
-    public void CheckForUpdates()
+    public void ToggleSidebarCollapsed()
+    {
+        IsSidebarCollapsed = !IsSidebarCollapsed;
+    }
+
+    [RelayCommand]
+    public void ToggleSplitMode()
+    {
+        SplitMode = !SplitMode;
+    }
+
+    [RelayCommand]
+    public void ToggleTodosDrawer()
+    {
+        if (!EnableTodos) return;
+        IsTodosDrawerOpen = !IsTodosDrawerOpen;
+        TodosDrawerToggled?.Invoke(IsTodosDrawerOpen, EffectiveTodoServerUrl);
+    }
+
+    [RelayCommand]
+    public void OpenDownloadsFolder()
+    {
+        var path = !string.IsNullOrWhiteSpace(DownloadFolderPath) && Directory.Exists(DownloadFolderPath)
+            ? DownloadFolderPath
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+        SystemIntegrationService.OpenFolderInExplorer(path);
+    }
+
+    [RelayCommand]
+    public void SaveAppLockPassword()
+    {
+        if (string.IsNullOrWhiteSpace(NewAppLockPassword)) return;
+        var (hash, salt) = ServiceLockService.HashSecret(NewAppLockPassword);
+        _state.Settings.LockedPassword = $"{salt}:{hash}";
+        NewAppLockPassword = string.Empty;
+        OnPropertyChanged(nameof(LockedPassword));
+        OnPropertyChanged(nameof(HasAppLockPassword));
+        SaveState();
+    }
+
+    public bool HasAppLockPassword => !string.IsNullOrWhiteSpace(_state.Settings.LockedPassword);
+
+    [RelayCommand]
+    public void LockApp()
+    {
+        if (!IsLockingFeatureEnabled || !HasAppLockPassword) return;
+        AppLockPasswordInput = string.Empty;
+        AppLockErrorText = string.Empty;
+        IsAppLocked = true;
+    }
+
+    [RelayCommand]
+    public void UnlockApp()
+    {
+        if (VerifyAppLockPassword(AppLockPasswordInput))
+        {
+            IsAppLocked = false;
+            AppLockPasswordInput = string.Empty;
+            AppLockErrorText = string.Empty;
+        }
+        else
+        {
+            AppLockErrorText = "Incorrect password. Please try again.";
+        }
+    }
+
+    public bool VerifyAppLockPassword(string? candidate)
+    {
+        var stored = _state.Settings.LockedPassword;
+        if (string.IsNullOrWhiteSpace(stored)) return true;
+
+        var parts = stored.Split(':', 2);
+        if (parts.Length == 2)
+        {
+            return ServiceLockService.VerifySecret(candidate, parts[1], parts[0]);
+        }
+
+        // Fallback for legacy plaintext imported passwords
+        return string.Equals(candidate, stored, StringComparison.Ordinal);
+    }
+
+    [RelayCommand]
+    public async Task CheckForUpdatesAsync()
     {
         var channel = BetaUpdates ? "beta" : "stable";
-        UpdateStatusText = $"Checked ({channel} channel): You are using the latest version ({AppVersionText}).";
+        UpdateStatusText = $"Checking for updates ({channel} channel)...";
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, "https://api.github.com/repos/ferdium/ferdium-app/releases");
+            req.Headers.UserAgent.ParseAdd($"FerdiumPlus/{AppVersionText}");
+            using var resp = await UpdateHttpClient.SendAsync(req);
+            if (!resp.IsSuccessStatusCode)
+            {
+                UpdateStatusText = $"Update check failed (HTTP {(int)resp.StatusCode}). Current version: {AppVersionText}.";
+                return;
+            }
+
+            var json = await resp.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var rel in doc.RootElement.EnumerateArray())
+                {
+                    var isPrerelease = rel.TryGetProperty("prerelease", out var pre) && pre.GetBoolean();
+                    if (!BetaUpdates && isPrerelease) continue;
+
+                    var tag = rel.TryGetProperty("tag_name", out var tagEl) ? tagEl.GetString() : null;
+                    if (!string.IsNullOrWhiteSpace(tag))
+                    {
+                        UpdateStatusText = $"Latest {channel} release: {tag} (installed: v{AppVersionText}).";
+                        return;
+                    }
+                }
+            }
+
+            UpdateStatusText = $"You are using the latest version ({AppVersionText}).";
+        }
+        catch
+        {
+            UpdateStatusText = $"Could not reach update server. Current version: {AppVersionText}.";
+        }
     }
 
     [RelayCommand]

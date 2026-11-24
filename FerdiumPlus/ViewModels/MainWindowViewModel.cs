@@ -38,6 +38,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         ServiceLockService.VerifyWindowsHelloAsync;
 
     public event Func<ServiceConfig, bool, bool, Task>? ServiceActivationRequested;
+    public event Func<ServiceConfig, bool, Task>? ServiceBackgroundPreloadRequested;
     public event Func<string, bool, Task>? ServiceHibernationRequested;
     public event Action<string>? ServiceHideRequested;
     public event Action<string>? ServiceReloadRequested;
@@ -79,9 +80,19 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasActiveService))]
+    [NotifyPropertyChangedFor(nameof(ShowLockedPane))]
+    [NotifyPropertyChangedFor(nameof(ShowEmptyState))]
     [NotifyPropertyChangedFor(nameof(CanQuickLockActiveService))]
     [NotifyPropertyChangedFor(nameof(QuickLockTooltip))]
     private ServiceItemViewModel? _activeService;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowLockedPane))]
+    [NotifyPropertyChangedFor(nameof(ShowEmptyState))]
+    private ServiceItemViewModel? _lockedDisplayService;
+
+    public bool ShowLockedPane => !HasActiveService && LockedDisplayService is not null;
+    public bool ShowEmptyState => !HasActiveService && LockedDisplayService is null;
 
     [ObservableProperty]
     private WorkspaceItemViewModel? _activeWorkspace;
@@ -219,6 +230,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
     [ObservableProperty]
     private bool _editRelockOnSystemSuspend = true;
+
+    [ObservableProperty]
+    private bool _editHideNotificationContentWhenLocked;
 
     [ObservableProperty]
     private bool _editHasExistingLockSecret;
@@ -475,7 +489,18 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
     public bool ShowWebControls
     {
-        get => !string.Equals(_state.Settings.NavigationBarBehaviour, "never", StringComparison.OrdinalIgnoreCase);
+        get
+        {
+            if (string.Equals(_state.Settings.NavigationBarBehaviour, "never", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+            if (string.Equals(_state.Settings.NavigationBarBehaviour, "custom", StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Equals(ActiveService?.Config.CatalogId, "custom", StringComparison.OrdinalIgnoreCase);
+            }
+            return true;
+        }
         set => NavigationBarBehaviour = value ? "always" : "never";
     }
 
@@ -503,34 +528,47 @@ public sealed partial class MainWindowViewModel : ObservableObject
     public async Task InitializeActiveServiceAsync()
     {
         var initial = VisibleServices.FirstOrDefault(s =>
-                s.Id == _state.ActiveServiceId && !s.Config.HibernateOnStartup && !s.IsLocked)
-            ?? VisibleServices.FirstOrDefault(s => !s.Config.HibernateOnStartup && !s.IsLocked);
+                s.Id == _state.ActiveServiceId && s.Config.IsEnabled && !s.Config.HibernateOnStartup && !s.IsLocked)
+            ?? VisibleServices.FirstOrDefault(s => s.Config.IsEnabled && !s.Config.HibernateOnStartup && !s.IsLocked);
 
-        if (initial is not null)
+        if (initial is not null && !HibernateOnStartup)
         {
             await ActivateServiceAsync(initial);
         }
+        else if (initial is not null)
+        {
+            // Even with HibernateOnStartup enabled, activate the primary active service so the window isn't blank,
+            // while keeping all other services hibernated.
+            await ActivateServiceAsync(initial);
+        }
 
-        // Preload services marked "Load on startup" (and all others if LazyLoadServices is disabled),
-        // always respecting per-service "Hibernate on startup" and locks.
+        // Preload services marked "Load on startup" (and all others if LazyLoadServices is disabled and HibernateOnStartup is false),
+        // respecting KeepAllWorkspacesLoaded, per-service HibernateOnStartup, and Enabled state.
+        // Locked services are preloaded silently in the background so they can deliver notifications while staying locked.
         var toPreload = AllServices
             .Where(s => s != initial
+                && s.Config.IsEnabled
                 && !s.Config.HibernateOnStartup
-                && !s.IsLocked
-                && (s.Config.LoadOnStartup || (!LazyLoadServices && VisibleServices.Contains(s))))
+                && (s.Config.LoadOnStartup ||
+                    (!LazyLoadServices && !HibernateOnStartup &&
+                     (KeepAllWorkspacesLoaded || VisibleServices.Contains(s)))))
             .ToList();
 
         if (toPreload.Count > 0)
         {
             foreach (var service in toPreload)
             {
-                if (ServiceActivationRequested is not null)
+                if (ServiceBackgroundPreloadRequested is not null)
+                {
+                    await ServiceBackgroundPreloadRequested.Invoke(service.Config, IsGlobalMuted);
+                }
+                else if (!service.IsLocked && ServiceActivationRequested is not null)
                 {
                     await ServiceActivationRequested.Invoke(service.Config, IsGlobalMuted, SuspendBackgroundWebViews);
                 }
             }
 
-            if (initial is not null)
+            if (ServiceBackgroundPreloadRequested is null && initial is not null)
             {
                 await ActivateServiceAsync(initial);
             }
@@ -542,14 +580,18 @@ public sealed partial class MainWindowViewModel : ObservableObject
     {
         if (service is null) return;
 
-        // Re-lock previous service if configured to re-lock on switch away
-        if (ActiveService is not null &&
-            ActiveService.Id != service.Id &&
-            ActiveService.Config.HasLockConfigured &&
-            ActiveService.Config.RelockOnSwitchAway)
+        // When leaving the currently active service, stamp its last-used time so inactivity
+        // timers (auto-lock / auto-hibernate) start counting from the moment you leave it.
+        if (ActiveService is not null && ActiveService.Id != service.Id)
         {
-            _unlockedServiceIds.Remove(ActiveService.Id);
-            ActiveService.IsLocked = true;
+            ActiveService.LastUsedUtc = DateTime.UtcNow;
+
+            if (ActiveService.Config.HasLockConfigured &&
+                ActiveService.Config.RelockOnSwitchAway)
+            {
+                _unlockedServiceIds.Remove(ActiveService.Id);
+                ActiveService.IsLocked = true;
+            }
         }
 
         // Gate locked services behind the Unlock Service overlay
@@ -561,6 +603,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
         IsSettingsOpen = false;
         IsServiceUnlockOpen = false;
+        LockedDisplayService = null;
 
         foreach (var item in AllServices)
         {
@@ -568,7 +611,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
 
         ActiveService = service;
+        OnPropertyChanged(nameof(ShowWebControls));
         service.LastUsedUtc = DateTime.UtcNow;
+        service.LastHibernatedUtc = null;
+        service.WokenInBackgroundUtc = null;
         AddressBarText = service.CurrentUrl;
         _state.ActiveServiceId = service.Id;
         SaveState();
@@ -597,6 +643,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
         service.IsLoaded = false;
         service.IsSuspended = false;
         service.IsLoading = false;
+        service.LastHibernatedUtc = DateTime.UtcNow;
+        service.WokenInBackgroundUtc = null;
 
         if (ActiveService?.Id == service.Id)
         {
@@ -637,16 +685,65 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
     public async Task CheckAutoHibernateAsync()
     {
-        if (AutoHibernateMinutes <= 0) return;
+        var now = DateTime.UtcNow;
+        var mainHibernationSeconds = AutoHibernateMinutes > 0
+            ? Math.Max(10, HibernationStrategySeconds)
+            : 0;
 
-        var cutoff = DateTime.UtcNow.AddMinutes(-AutoHibernateMinutes);
-        var idleServices = AllServices
-            .Where(s => !s.IsActive && s.IsLoaded && s.Config.IsHibernationEnabled && s.LastUsedUtc < cutoff)
-            .ToList();
-
-        foreach (var service in idleServices)
+        if (mainHibernationSeconds > 0)
         {
-            await HibernateServiceAsync(service);
+            var wakeUpHibernationSeconds = WakeUpHibernationStrategySeconds > 0
+                ? WakeUpHibernationStrategySeconds
+                : mainHibernationSeconds;
+
+            var idleServices = AllServices
+                .Where(s => !s.IsActive && s.IsLoaded && s.Config.IsHibernationEnabled)
+                .Where(s =>
+                {
+                    if (s.WokenInBackgroundUtc.HasValue)
+                    {
+                        return (now - s.WokenInBackgroundUtc.Value).TotalSeconds >= wakeUpHibernationSeconds;
+                    }
+                    return (now - s.LastUsedUtc).TotalSeconds >= mainHibernationSeconds;
+                })
+                .ToList();
+
+            foreach (var service in idleServices)
+            {
+                await HibernateServiceAsync(service);
+            }
+        }
+
+        // Wake-up strategy: periodically wake hibernated services to check for new messages
+        if (WakeUpStrategySeconds > 0 && ServiceActivationRequested is not null)
+        {
+            var toWake = AllServices
+                .Where(s => !s.IsActive && !s.IsLoaded && s.Config.IsEnabled && !s.IsLocked && s.LastHibernatedUtc.HasValue)
+                .Where(s =>
+                {
+                    var splaySeconds = WakeUpHibernationSplay
+                        ? Math.Abs(s.Id.GetHashCode()) % Math.Max(1, Math.Min(60, WakeUpStrategySeconds / 2))
+                        : 0;
+                    return (now - s.LastHibernatedUtc!.Value).TotalSeconds >= (WakeUpStrategySeconds + splaySeconds);
+                })
+                .Take(2) // Wake at most 2 per tick to avoid CPU spikes
+                .ToList();
+
+            if (toWake.Count > 0)
+            {
+                var currentActive = ActiveService;
+                foreach (var service in toWake)
+                {
+                    service.WokenInBackgroundUtc = now;
+                    service.LastHibernatedUtc = null;
+                    await ServiceActivationRequested.Invoke(service.Config, IsEffectiveMuted, SuspendBackgroundWebViews);
+                }
+
+                if (currentActive is not null)
+                {
+                    await ServiceActivationRequested.Invoke(currentActive.Config, IsEffectiveMuted, SuspendBackgroundWebViews);
+                }
+            }
         }
     }
 
@@ -744,7 +841,49 @@ public sealed partial class MainWindowViewModel : ObservableObject
     {
         if (ActiveService is not null && !string.IsNullOrWhiteSpace(AddressBarText))
         {
-            ServiceNavigateRequested?.Invoke(ActiveService.Id, AddressBarText);
+            var target = PrivacyAndShellHelpers.LooksLikeSearchQuery(AddressBarText)
+                ? PrivacyAndShellHelpers.BuildSearchUrl(AddressBarText, SearchEngine)
+                : AddressBarText;
+            ServiceNavigateRequested?.Invoke(ActiveService.Id, target);
+        }
+    }
+
+    [RelayCommand]
+    public async Task ToggleServiceEnabledAsync(ServiceItemViewModel? service)
+    {
+        if (service is null) return;
+        service.IsEnabled = !service.IsEnabled;
+        if (!service.IsEnabled && service.IsLoaded)
+        {
+            await HibernateServiceAsync(service);
+        }
+        RefreshVisibleServices();
+        SaveState();
+    }
+
+    [RelayCommand]
+    public async Task ActivateNextServiceAsync()
+    {
+        if (VisibleServices.Count == 0) return;
+        var idx = ActiveService is null ? -1 : VisibleServices.IndexOf(ActiveService);
+        var next = VisibleServices[(idx + 1) % VisibleServices.Count];
+        await ActivateServiceAsync(next);
+    }
+
+    [RelayCommand]
+    public async Task ActivatePreviousServiceAsync()
+    {
+        if (VisibleServices.Count == 0) return;
+        var idx = ActiveService is null ? 0 : VisibleServices.IndexOf(ActiveService);
+        var prev = VisibleServices[(idx - 1 + VisibleServices.Count) % VisibleServices.Count];
+        await ActivateServiceAsync(prev);
+    }
+
+    public async Task ActivateServiceByIndexAsync(int zeroBasedIndex)
+    {
+        if (zeroBasedIndex >= 0 && zeroBasedIndex < VisibleServices.Count)
+        {
+            await ActivateServiceAsync(VisibleServices[zeroBasedIndex]);
         }
     }
 
@@ -774,6 +913,11 @@ public sealed partial class MainWindowViewModel : ObservableObject
     public async Task RemoveServiceAsync(ServiceItemViewModel? service)
     {
         if (service is null) return;
+
+        if (LockedDisplayService?.Id == service.Id)
+        {
+            LockedDisplayService = null;
+        }
 
         await HibernateServiceAsync(service);
         AllServices.Remove(service);
@@ -1174,6 +1318,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
             EditAutoLockMinutes = Math.Clamp(cfg.AutoLockMinutes <= 0 ? 5 : cfg.AutoLockMinutes, 1, 120);
             EditRelockOnMinimize = cfg.RelockOnMinimize;
             EditRelockOnSystemSuspend = cfg.RelockOnSystemSuspend;
+            EditHideNotificationContentWhenLocked = cfg.HideNotificationContentWhenLocked;
         }
         else
         {
@@ -1181,6 +1326,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
             EditAutoLockMinutes = 5;
             EditRelockOnMinimize = false;
             EditRelockOnSystemSuspend = true;
+            EditHideNotificationContentWhenLocked = false;
         }
         EditHasExistingLockSecret = !string.IsNullOrWhiteSpace(cfg.LockSecretHash) && !string.IsNullOrWhiteSpace(cfg.LockSecretSalt);
         EditLockValidationError = string.Empty;
@@ -1223,6 +1369,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         EditAutoLockMinutes = 5;
         EditRelockOnMinimize = false;
         EditRelockOnSystemSuspend = true;
+        EditHideNotificationContentWhenLocked = false;
 
         var siblingCount = CountMatchingServices(service.Config);
         EditAccountLabel = $"Account {siblingCount + 1}";
@@ -1351,6 +1498,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         cfg.AutoLockMinutes = Math.Clamp(EditAutoLockMinutes <= 0 ? 5 : EditAutoLockMinutes, 1, 120);
         cfg.RelockOnMinimize = EditLockMode != ServiceLockMode.None && EditRelockOnMinimize;
         cfg.RelockOnSystemSuspend = EditLockMode != ServiceLockMode.None && EditRelockOnSystemSuspend;
+        cfg.HideNotificationContentWhenLocked = EditLockMode != ServiceLockMode.None && EditHideNotificationContentWhenLocked;
     }
 
     [RelayCommand]
@@ -1558,6 +1706,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         UnlockSecretInput = string.Empty;
         UnlockErrorMessage = string.Empty;
         IsServiceUnlockOpen = false;
+        LockedDisplayService = null;
 
         await ActivateServiceAsync(target);
     }
@@ -1575,6 +1724,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
             service.IsActive = false;
             ServiceHideRequested?.Invoke(service.Id);
             ActiveService = null;
+            UnlockTargetService = service;
+            UnlockSecretInput = string.Empty;
+            UnlockErrorMessage = string.Empty;
+            LockedDisplayService = service;
         }
 
         OnPropertyChanged(nameof(CanQuickLockActiveService));
@@ -1591,17 +1744,61 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
     }
 
-    public async Task CheckAutoLockAsync(DateTime? utcNow = null)
+    public void RecordActiveServiceActivity(DateTime? utcNow = null)
+    {
+        if (ActiveService is not null && !ActiveService.IsLocked)
+        {
+            ActiveService.LastUsedUtc = utcNow ?? DateTime.UtcNow;
+        }
+    }
+
+    public async Task CheckAutoLockAsync(
+        DateTime? utcNow = null,
+        bool isAppForeground = false,
+        TimeSpan? userIdleDuration = null)
     {
         var now = utcNow ?? DateTime.UtcNow;
-        var dueServices = AllServices
-            .Where(s =>
-                s.Config.HasLockConfigured &&
-                s.Config.AutoLockEnabled &&
-                s.Config.AutoLockMinutes > 0 &&
-                !s.IsLocked &&
-                (now - s.LastUsedUtc) >= TimeSpan.FromMinutes(s.Config.AutoLockMinutes))
-            .ToList();
+        var dueServices = new List<ServiceItemViewModel>();
+
+        foreach (var s in AllServices)
+        {
+            if (!s.Config.HasLockConfigured ||
+                !s.Config.AutoLockEnabled ||
+                s.Config.AutoLockMinutes <= 0 ||
+                s.IsLocked)
+            {
+                continue;
+            }
+
+            var threshold = TimeSpan.FromMinutes(s.Config.AutoLockMinutes);
+
+            if (s.IsActive && isAppForeground)
+            {
+                // Active service in the foreground window: only lock if the user has been
+                // idle at the keyboard/mouse for at least AutoLockMinutes.
+                if (userIdleDuration.HasValue)
+                {
+                    if (userIdleDuration.Value < threshold)
+                    {
+                        s.LastUsedUtc = now - userIdleDuration.Value;
+                        continue;
+                    }
+
+                    dueServices.Add(s);
+                }
+                else
+                {
+                    s.LastUsedUtc = now;
+                }
+
+                continue;
+            }
+
+            if ((now - s.LastUsedUtc) >= threshold)
+            {
+                dueServices.Add(s);
+            }
+        }
 
         foreach (var service in dueServices)
         {
@@ -1659,6 +1856,18 @@ public sealed partial class MainWindowViewModel : ObservableObject
         _state.ActiveWorkspaceId = workspace.Id;
         RefreshVisibleServices();
         SaveState();
+
+        if (!KeepAllWorkspacesLoaded && workspace.Config is not null)
+        {
+            var keepIds = workspace.Config.ServiceIds;
+            var toHibernate = AllServices
+                .Where(s => !s.IsActive && s.IsLoaded && s.Config.IsHibernationEnabled && !keepIds.Contains(s.Id))
+                .ToList();
+            foreach (var svc in toHibernate)
+            {
+                _ = HibernateServiceAsync(svc);
+            }
+        }
     }
 
     [RelayCommand]
@@ -1745,6 +1954,11 @@ public sealed partial class MainWindowViewModel : ObservableObject
         var items = filterIds is null
             ? AllServices
             : AllServices.Where(s => filterIds.Contains(s.Id));
+
+        if (!ShowDisabledServices)
+        {
+            items = items.Where(s => s.Config.IsEnabled);
+        }
 
         foreach (var item in items)
         {

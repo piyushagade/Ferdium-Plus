@@ -113,6 +113,52 @@ public static class ServiceIconService
     public static bool HasBundledIcon(string? catalogId, string? url) =>
         ResolveBundledId(catalogId, url) is not null;
 
+    /// <summary>
+    /// Returns a local file path to a PNG icon for the service suitable for Windows Toast
+    /// notifications (which require a file:// URI rather than a WPF pack:// URI).
+    /// </summary>
+    public static string? GetLocalIconFilePath(string? catalogId, string? url)
+    {
+        var bundledId = ResolveBundledId(catalogId, url);
+        if (bundledId is not null)
+        {
+            var diskPath = Path.Combine(CacheDirectory, $"bundled_{bundledId}.png");
+            if (File.Exists(diskPath))
+            {
+                return diskPath;
+            }
+
+            try
+            {
+                var packUri = new Uri($"pack://application:,,,/FerdiumPlus;component/Assets/Icons/{bundledId}.png", UriKind.Absolute);
+                var resourceInfo = System.Windows.Application.GetResourceStream(packUri);
+                if (resourceInfo?.Stream is not null)
+                {
+                    using var stream = resourceInfo.Stream;
+                    using var fs = File.Create(diskPath);
+                    stream.CopyTo(fs);
+                    return diskPath;
+                }
+            }
+            catch
+            {
+                // Fall through if resource extraction is unavailable (e.g. headless unit test)
+            }
+        }
+
+        var domain = ExtractDomain(url);
+        if (!string.IsNullOrEmpty(domain))
+        {
+            var cachedPath = GetCachePath(domain);
+            if (File.Exists(cachedPath))
+            {
+                return cachedPath;
+            }
+        }
+
+        return null;
+    }
+
     public static Uri? GetBundledPackUri(string? catalogId, string? url)
     {
         var id = ResolveBundledId(catalogId, url);

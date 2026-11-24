@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using FerdiumApp.Models;
 using Microsoft.Web.WebView2.Core;
@@ -28,6 +29,243 @@ public sealed record ParsedExtensionManifest(
 public sealed partial class BrowserExtensionService
 {
     public const string BitwardenWebStoreId = "nngceckbapebfimnlniiiahkandclblb";
+    private const string GuardScriptFileName = "ferdium-lifecycle-guard.js";
+    private const string LegacyGuardScriptFileName = "__ferdium_guard.js";
+    private const string LegacyWrapperFileName = "__ferdium_sw_wrapper.js";
+
+    private const string LifecyclePopupGuardScript = """
+(() => {
+  const rt = globalThis.chrome && globalThis.chrome.runtime;
+  if (!rt) return;
+
+  // 1. Clear any previously registered uninstall URL and block future setUninstallURL calls
+  if (typeof rt.setUninstallURL === 'function') {
+    try { rt.setUninstallURL(''); } catch (_) {}
+    const noopUninstall = (_url, cb) => {
+      if (typeof cb === 'function') { try { cb(); } catch (_) {} }
+      return Promise.resolve();
+    };
+    try {
+      Object.defineProperty(rt, 'setUninstallURL', { value: noopUninstall, configurable: true, writable: true });
+    } catch (_) {
+      try { rt.setUninstallURL = noopUninstall; } catch (_) {}
+    }
+  }
+
+  // 2. Suppress automatic http(s) welcome/onboarding tabs opened from runtime.onInstalled
+  let suppressUntil = 0;
+  const markInstallWindow = () => {
+    suppressUntil = Math.max(suppressUntil, Date.now() + 5000);
+  };
+
+  if (rt.onInstalled && typeof rt.onInstalled.addListener === 'function') {
+    const origAddListener = rt.onInstalled.addListener.bind(rt.onInstalled);
+    const wrappedAddListener = (listener) => {
+      if (typeof listener !== 'function') return origAddListener(listener);
+      return origAddListener((details) => {
+        if (details && (details.reason === 'install' || details.reason === 'update')) {
+          markInstallWindow();
+        }
+        return listener(details);
+      });
+    };
+    try {
+      Object.defineProperty(rt.onInstalled, 'addListener', { value: wrappedAddListener, configurable: true, writable: true });
+    } catch (_) {
+      try { rt.onInstalled.addListener = wrappedAddListener; } catch (_) {}
+    }
+  }
+
+  const isExternalHttpUrl = (u) => typeof u === 'string' && /^https?:\/\//i.test(u);
+
+  const wrapCreator = (api, method, dummyResult) => {
+    if (!api || typeof api[method] !== 'function') return;
+    const orig = api[method].bind(api);
+    const wrapped = (createProps, cb) => {
+      const rawUrl = Array.isArray(createProps && createProps.url)
+        ? createProps.url[0]
+        : (createProps && createProps.url);
+      if (Date.now() < suppressUntil && isExternalHttpUrl(rawUrl)) {
+        if (typeof cb === 'function') { try { cb(dummyResult); } catch (_) {} }
+        return Promise.resolve(dummyResult);
+      }
+      return orig(createProps, cb);
+    };
+    try {
+      Object.defineProperty(api, method, { value: wrapped, configurable: true, writable: true });
+    } catch (_) {
+      try { api[method] = wrapped; } catch (_) {}
+    }
+  };
+
+  wrapCreator(globalThis.chrome && globalThis.chrome.tabs, 'create', { id: -1, active: false });
+  wrapCreator(globalThis.chrome && globalThis.chrome.windows, 'create', { id: -1, tabs: [] });
+
+  // 3. Bridge chrome.tabs.query({ active: true, ... }) and chrome.tabs.get(...) so popups/workers
+  // see the active service tab instead of about:/chrome-extension: when WebView2 has no browser tab strip.
+  const tabsApi = globalThis.chrome && globalThis.chrome.tabs;
+  if (tabsApi && typeof tabsApi.query === 'function') {
+    let preferredActiveUrl = '';
+    const storageLocal = globalThis.chrome && globalThis.chrome.storage && globalThis.chrome.storage.local;
+    const readActiveUrl = () => new Promise((resolve) => {
+      if (storageLocal && typeof storageLocal.get === 'function') {
+        try {
+          const maybe = storageLocal.get('__ferdium_active_tab_url', (res) => {
+            if (res && typeof res.__ferdium_active_tab_url === 'string' && res.__ferdium_active_tab_url) {
+              preferredActiveUrl = res.__ferdium_active_tab_url;
+            }
+            resolve(preferredActiveUrl);
+          });
+          if (maybe && typeof maybe.then === 'function') {
+            maybe.then((res) => {
+              if (res && typeof res.__ferdium_active_tab_url === 'string' && res.__ferdium_active_tab_url) {
+                preferredActiveUrl = res.__ferdium_active_tab_url;
+              }
+              resolve(preferredActiveUrl);
+            }).catch(() => resolve(preferredActiveUrl));
+          }
+          return;
+        } catch (_) {}
+      }
+      resolve(preferredActiveUrl);
+    });
+
+    if (globalThis.chrome && globalThis.chrome.storage && globalThis.chrome.storage.onChanged) {
+      try {
+        globalThis.chrome.storage.onChanged.addListener((changes, area) => {
+          if (area === 'local' && changes && changes.__ferdium_active_tab_url) {
+            preferredActiveUrl = changes.__ferdium_active_tab_url.newValue || '';
+          }
+        });
+      } catch (_) {}
+    }
+
+    const isServiceTab = (t) => t && typeof t.url === 'string' && /^https?:\/\//i.test(t.url);
+    const makeSyntheticTab = (url) => ({
+      id: 1,
+      index: 0,
+      windowId: 1,
+      active: true,
+      highlighted: true,
+      selected: true,
+      pinned: false,
+      incognito: false,
+      status: 'complete',
+      url,
+      title: '',
+    });
+
+    const pickBestTab = (allTabs, activeUrl) => {
+      const candidates = (allTabs || []).filter(isServiceTab);
+      if (candidates.length > 0) {
+        if (activeUrl) {
+          const exact = candidates.find((t) => t.url === activeUrl);
+          if (exact) return Object.assign({}, exact, { active: true });
+          try {
+            const targetOrigin = new URL(activeUrl).origin;
+            const sameOrigin = candidates.find((t) => {
+              try { return new URL(t.url).origin === targetOrigin; } catch (_) { return false; }
+            });
+            if (sameOrigin) return Object.assign({}, sameOrigin, { active: true });
+          } catch (_) {}
+        }
+        return Object.assign({}, candidates.find((t) => t.active) || candidates[0], { active: true });
+      }
+      if (activeUrl && /^https?:\/\//i.test(activeUrl)) {
+        return makeSyntheticTab(activeUrl);
+      }
+      return null;
+    };
+
+    const origQuery = tabsApi.query.bind(tabsApi);
+    const callOrigQuery = (q) => new Promise((resolve) => {
+      try {
+        const maybe = origQuery(q || {}, (tabs) => resolve(Array.isArray(tabs) ? tabs : []));
+        if (maybe && typeof maybe.then === 'function') {
+          maybe.then((tabs) => resolve(Array.isArray(tabs) ? tabs : [])).catch(() => resolve([]));
+        }
+      } catch (_) {
+        resolve([]);
+      }
+    });
+
+    const wrappedQuery = (queryInfo, cb) => {
+      const wantsActive = Boolean(queryInfo && queryInfo.active);
+      const promise = (async () => {
+        const tabs = await callOrigQuery(queryInfo || {});
+        if (!wantsActive || tabs.some(isServiceTab)) {
+          return tabs;
+        }
+        const activeUrl = await readActiveUrl();
+        const allTabs = await callOrigQuery({});
+        const best = pickBestTab(allTabs, activeUrl);
+        return best ? [best] : tabs;
+      })();
+
+      if (typeof cb === 'function') {
+        promise.then((res) => { try { cb(res); } catch (_) {} });
+        return;
+      }
+      return promise;
+    };
+
+    try {
+      Object.defineProperty(tabsApi, 'query', { value: wrappedQuery, configurable: true, writable: true });
+    } catch (_) {
+      try { tabsApi.query = wrappedQuery; } catch (_) {}
+    }
+
+    if (typeof tabsApi.get === 'function') {
+      const origGet = tabsApi.get.bind(tabsApi);
+      const wrappedGet = (tabId, cb) => {
+        const promise = new Promise((resolve, reject) => {
+          const fallback = async (err) => {
+            const activeUrl = await readActiveUrl();
+            if (activeUrl && /^https?:\/\//i.test(activeUrl)) {
+              resolve(makeSyntheticTab(activeUrl));
+            } else if (err) {
+              reject(err);
+            } else {
+              resolve(undefined);
+            }
+          };
+          try {
+            const maybe = origGet(tabId, (tab) => {
+              if (tab && isServiceTab(tab)) {
+                resolve(tab);
+              } else {
+                fallback(null);
+              }
+            });
+            if (maybe && typeof maybe.then === 'function') {
+              maybe.then((tab) => {
+                if (tab && isServiceTab(tab)) {
+                  resolve(tab);
+                } else {
+                  fallback(null);
+                }
+              }).catch((err) => fallback(err));
+            }
+          } catch (err) {
+            fallback(err);
+          }
+        });
+
+        if (typeof cb === 'function') {
+          promise.then((res) => { try { cb(res); } catch (_) {} }).catch(() => { try { cb(undefined); } catch (_) {} });
+          return;
+        }
+        return promise;
+      };
+      try {
+        Object.defineProperty(tabsApi, 'get', { value: wrappedGet, configurable: true, writable: true });
+      } catch (_) {
+        try { tabsApi.get = wrappedGet; } catch (_) {}
+      }
+    }
+  }
+})();
+""";
 
     private static readonly HttpClient SharedHttpClient = CreateHttpClient();
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -373,6 +611,7 @@ public sealed partial class BrowserExtensionService
         ExtractZipSafely(zipBytes, targetDir);
 
         var extensionRoot = ResolveExtensionRoot(targetDir);
+        ApplyLifecyclePopupGuard(extensionRoot);
         var manifest = ParseManifest(extensionRoot);
 
         var config = new BrowserExtensionConfig
@@ -414,6 +653,7 @@ public sealed partial class BrowserExtensionService
         ExtractZipSafely(zipBytes, targetDir);
 
         var extensionRoot = ResolveExtensionRoot(targetDir);
+        ApplyLifecyclePopupGuard(extensionRoot);
         var manifest = ParseManifest(extensionRoot);
 
         var config = new BrowserExtensionConfig
@@ -548,6 +788,11 @@ public sealed partial class BrowserExtensionService
 
                 try
                 {
+                    if (!string.Equals(item.Source, "local", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ApplyLifecyclePopupGuard(item.UnpackedPath);
+                    }
+
                     var manifest = ParseManifest(item.UnpackedPath);
                     item.Name = manifest.Name;
                     item.Version = manifest.Version;
@@ -677,5 +922,146 @@ public sealed partial class BrowserExtensionService
     {
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(seed));
         return Convert.ToHexString(hash).ToLowerInvariant()[..16];
+    }
+
+    /// <summary>
+    /// Injects a lightweight background guard script into managed unpacked extensions
+    /// to suppress unsolicited on-install welcome tabs and on-uninstall survey pages.
+    /// Uses a non-underscore filename (Chromium reserves leading '_' for system folders)
+    /// and preserves the original manifest service_worker path.
+    /// </summary>
+    public static void ApplyLifecyclePopupGuard(string extensionDir)
+    {
+        var manifestPath = Path.Combine(extensionDir, "manifest.json");
+        if (!File.Exists(manifestPath))
+        {
+            return;
+        }
+
+        try
+        {
+            var rawJson = File.ReadAllText(manifestPath, Encoding.UTF8);
+            var rootNode = JsonNode.Parse(rawJson) as JsonObject;
+            if (rootNode is null)
+            {
+                return;
+            }
+
+            if (rootNode["background"] is not JsonObject backgroundObj)
+            {
+                return;
+            }
+
+            var manifestModified = false;
+
+            // Migrate/repair any extension previously wrapped with reserved '__ferdium_*' filenames
+            var legacyWrapperPath = Path.Combine(extensionDir, LegacyWrapperFileName);
+            var legacyGuardPath = Path.Combine(extensionDir, LegacyGuardScriptFileName);
+
+            if (backgroundObj["service_worker"] is JsonValue legacySwVal &&
+                legacySwVal.TryGetValue<string>(out var currentSw) &&
+                string.Equals(currentSw.Trim().TrimStart('/'), LegacyWrapperFileName, StringComparison.OrdinalIgnoreCase) &&
+                File.Exists(legacyWrapperPath))
+            {
+                var wrapperText = File.ReadAllText(legacyWrapperPath, Encoding.UTF8);
+                var restoredSw = ExtractOriginalSwFromLegacyWrapper(wrapperText);
+                if (!string.IsNullOrWhiteSpace(restoredSw))
+                {
+                    backgroundObj["service_worker"] = restoredSw;
+                    manifestModified = true;
+                }
+            }
+
+            if (File.Exists(legacyWrapperPath))
+            {
+                try { File.Delete(legacyWrapperPath); } catch { }
+            }
+            if (File.Exists(legacyGuardPath))
+            {
+                try { File.Delete(legacyGuardPath); } catch { }
+            }
+
+            var guardPath = Path.Combine(extensionDir, GuardScriptFileName);
+
+            if (backgroundObj["service_worker"] is JsonValue swVal &&
+                swVal.TryGetValue<string>(out var swRelPath) &&
+                !string.IsNullOrWhiteSpace(swRelPath))
+            {
+                var normalizedSw = swRelPath.Trim().TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
+                var swFullPath = Path.Combine(extensionDir, normalizedSw);
+
+                if (File.Exists(swFullPath))
+                {
+                    File.WriteAllText(guardPath, LifecyclePopupGuardScript, Encoding.UTF8);
+
+                    var isModule = backgroundObj["type"] is JsonValue typeVal &&
+                                   typeVal.TryGetValue<string>(out var bgType) &&
+                                   string.Equals(bgType, "module", StringComparison.OrdinalIgnoreCase);
+
+                    var swContent = File.ReadAllText(swFullPath, Encoding.UTF8);
+                    if (!swContent.Contains(GuardScriptFileName, StringComparison.Ordinal))
+                    {
+                        var prefix = isModule
+                            ? $"import '/{GuardScriptFileName}';\n"
+                            : $"importScripts('/{GuardScriptFileName}');\n";
+                        File.WriteAllText(swFullPath, prefix + swContent, Encoding.UTF8);
+                    }
+                }
+            }
+            else if (backgroundObj["scripts"] is JsonArray scriptsArray)
+            {
+                // Remove any legacy '__ferdium_guard.js' entry
+                for (var i = scriptsArray.Count - 1; i >= 0; i--)
+                {
+                    if (scriptsArray[i] is JsonValue lv &&
+                        lv.TryGetValue<string>(out var ls) &&
+                        string.Equals(ls.TrimStart('/'), LegacyGuardScriptFileName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        scriptsArray.RemoveAt(i);
+                        manifestModified = true;
+                    }
+                }
+
+                var alreadyPresent = scriptsArray.Any(node =>
+                    node is JsonValue v &&
+                    v.TryGetValue<string>(out var s) &&
+                    string.Equals(s.TrimStart('/'), GuardScriptFileName, StringComparison.OrdinalIgnoreCase));
+
+                File.WriteAllText(guardPath, LifecyclePopupGuardScript, Encoding.UTF8);
+                if (!alreadyPresent)
+                {
+                    scriptsArray.Insert(0, GuardScriptFileName);
+                    manifestModified = true;
+                }
+            }
+
+            if (manifestModified)
+            {
+                File.WriteAllText(manifestPath, rootNode.ToJsonString(JsonOptions), Encoding.UTF8);
+            }
+        }
+        catch
+        {
+            // Never fail extension installation if guard cannot be applied
+        }
+    }
+
+    private static string? ExtractOriginalSwFromLegacyWrapper(string wrapperText)
+    {
+        // Classic: importScripts('/__ferdium_guard.js', '/background.js');
+        var classicMatch = Regex.Match(wrapperText, @"importScripts\([^,]+,\s*'/([^']+)'\)", RegexOptions.CultureInvariant);
+        if (classicMatch.Success)
+        {
+            return classicMatch.Groups[1].Value;
+        }
+
+        // Module: import './__ferdium_guard.js';\nimport './background.js';
+        var moduleMatch = Regex.Match(wrapperText, @"import\s+'\./(?!__ferdium_guard\.js)([^']+)';", RegexOptions.CultureInvariant);
+        if (moduleMatch.Success)
+        {
+            return moduleMatch.Groups[1].Value;
+        }
+
+        return null;
     }
 }

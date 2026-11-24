@@ -35,7 +35,7 @@ public sealed class AppSettings
     public bool ShowMessageBadgeWhenMuted { get; set; } = true;
     public bool EnableLongPressServiceHint { get; set; } = false;
     public int IconSize { get; set; } = 20; // 0, 10, 20, 30, 40
-    public string NavigationBarBehaviour { get; set; } = "always"; // custom, always, never
+    public string NavigationBarBehaviour { get; set; } = "never"; // custom, always, never
     public bool LazyLoadServices { get; set; } = true;
     public bool SuspendBackgroundWebViews { get; set; } = false;
     public bool TrimMemoryOnHibernate { get; set; } = true;
@@ -55,10 +55,10 @@ public sealed class AppSettings
     public int SplitColumns { get; set; } = 3;
     public string AccentColor { get; set; } = "#7367F0";
     public string ProgressbarAccentColor { get; set; } = "#7367F0";
-    public int ServiceRibbonWidth { get; set; } = 68; // 35, 45, 55, 68, 80, 90, 100
+    public int ServiceRibbonWidth { get; set; } = 55; // 35, 45, 55, 68, 80, 90, 100
     public int WebviewPaddingSize { get; set; } = 0;
     public int ServiceWebviewBorderRadius { get; set; } = 8;
-    public string SidebarServicesLocation { get; set; } = "topLeft"; // topLeft, center, bottomRight
+    public string SidebarServicesLocation { get; set; } = "center"; // topLeft, center, bottomRight
     public bool UseHorizontalStyle { get; set; } = false;
     public bool HideCollapseButton { get; set; } = false;
     public bool HideRecipesButton { get; set; } = false;
