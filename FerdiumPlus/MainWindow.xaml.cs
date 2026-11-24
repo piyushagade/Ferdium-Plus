@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -94,7 +95,22 @@ public partial class MainWindow : FluentWindow
         _maintenanceTimer.Tick += async (_, _) =>
         {
             await _viewModel.CheckAutoHibernateAsync();
-            await _viewModel.CheckAutoLockAsync();
+            var isForeground = IsVisible && WindowState != WindowState.Minimized && IsActive;
+            var idleDuration = GetSystemIdleDuration();
+            await _viewModel.CheckAutoLockAsync(
+                isAppForeground: isForeground,
+                userIdleDuration: idleDuration);
+
+            // Global app inactivity lock
+            if (_viewModel.IsLockingFeatureEnabled &&
+                _viewModel.HasAppLockPassword &&
+                _viewModel.InactivityLockMinutes > 0 &&
+                !_viewModel.IsAppLocked &&
+                idleDuration.TotalMinutes >= _viewModel.InactivityLockMinutes)
+            {
+                _viewModel.LockApp();
+            }
+
             _viewModel.NotifyTrayStatus();
             _viewModel.UpdateResourceFootprint();
         };
@@ -103,6 +119,8 @@ public partial class MainWindow : FluentWindow
         SystemEvents.SessionSwitch += SystemEvents_SessionSwitch;
 
         Loaded += MainWindow_Loaded;
+        Activated += (_, _) => _viewModel.RecordActiveServiceActivity();
+        Deactivated += (_, _) => _viewModel.RecordActiveServiceActivity();
         StateChanged += MainWindow_StateChanged;
         Closing += MainWindow_Closing;
         Closed += MainWindow_Closed;
@@ -113,6 +131,11 @@ public partial class MainWindow : FluentWindow
         _viewModel.ServiceActivationRequested += async (config, globalMuted, suspendBg) =>
         {
             await _webViewManager.ActivateServiceAsync(config, globalMuted, suspendBg);
+        };
+
+        _viewModel.ServiceBackgroundPreloadRequested += async (config, globalMuted) =>
+        {
+            await _webViewManager.PreloadServiceInBackgroundAsync(config, globalMuted);
         };
 
         _viewModel.ServiceHibernationRequested += async (serviceId, trimMemory) =>
@@ -138,6 +161,14 @@ public partial class MainWindow : FluentWindow
         _viewModel.BrowseCrxFileRequested += BrowseAndInstallCrxExtension;
         _viewModel.BrowseExtensionFolderRequested += BrowseAndLoadUnpackedExtension;
         _viewModel.OpenExtensionOptionsRequested += OpenExtensionOptionsWindow;
+        _viewModel.GlobalHideShortcutChanged += ApplyGlobalHideHotkey;
+        _viewModel.TodosDrawerToggled += async (isOpen, url) =>
+        {
+            if (isOpen)
+            {
+                await _webViewManager.EnsureTodosWebViewAsync(TodosWebViewHost, url);
+            }
+        };
         _viewModel.TrayStatusChanged += (unread, muted) =>
         {
             _trayService.UpdateStatus(unread, muted);
@@ -147,13 +178,19 @@ public partial class MainWindow : FluentWindow
         // Hide WebView2 host while any XAML overlay is open to prevent HWND airspace clipping
         _viewModel.PropertyChanged += (_, args) =>
         {
+            if (args.PropertyName == nameof(MainWindowViewModel.ShowLockedPane) && _viewModel.ShowLockedPane)
+            {
+                InlineUnlockSecretBox.Password = string.Empty;
+            }
+
             if (args.PropertyName is nameof(MainWindowViewModel.IsQuickSwitchOpen)
                 or nameof(MainWindowViewModel.IsAddServiceOpen)
                 or nameof(MainWindowViewModel.IsSettingsOpen)
                 or nameof(MainWindowViewModel.IsWorkspacesOpen)
                 or nameof(MainWindowViewModel.IsSessionShareOpen)
                 or nameof(MainWindowViewModel.IsEditServiceOpen)
-                or nameof(MainWindowViewModel.IsServiceUnlockOpen))
+                or nameof(MainWindowViewModel.IsServiceUnlockOpen)
+                or nameof(MainWindowViewModel.IsAppLocked))
             {
                 var anyOverlay = _viewModel.IsQuickSwitchOpen
                     || _viewModel.IsAddServiceOpen
@@ -161,9 +198,11 @@ public partial class MainWindow : FluentWindow
                     || _viewModel.IsWorkspacesOpen
                     || _viewModel.IsSessionShareOpen
                     || _viewModel.IsEditServiceOpen
-                    || _viewModel.IsServiceUnlockOpen;
+                    || _viewModel.IsServiceUnlockOpen
+                    || _viewModel.IsAppLocked;
 
-                WebViewHostGrid.Visibility = anyOverlay ? Visibility.Collapsed : Visibility.Visible;
+                var isPrivacyLockOverlay = _viewModel.IsServiceUnlockOpen || _viewModel.IsAppLocked;
+                _ = UpdateOverlayBackdropAsync(anyOverlay, isPrivacyLockOverlay);
 
                 if (_viewModel.IsQuickSwitchOpen)
                 {
@@ -190,10 +229,93 @@ public partial class MainWindow : FluentWindow
         };
     }
 
+    private int _overlayBackdropToken;
+
+    private async Task UpdateOverlayBackdropAsync(bool anyOverlay, bool isPrivacyLockOverlay)
+    {
+        var token = ++_overlayBackdropToken;
+
+        if (!anyOverlay)
+        {
+            WebViewBackdropSnapshot.Visibility = Visibility.Collapsed;
+            WebViewBackdropSnapshot.Source = null;
+            ShellBodyGrid.Effect = null;
+            WebViewHostGrid.Visibility = Visibility.Visible;
+            return;
+        }
+
+        // Capture a 1-frame snapshot of the live WebView2 before hiding its HWND (skip for lock screens)
+        if (!isPrivacyLockOverlay &&
+            WebViewBackdropSnapshot.Source is null &&
+            WebViewHostGrid.Visibility == Visibility.Visible)
+        {
+            var preview = await _webViewManager.CaptureActivePreviewAsync();
+            if (token != _overlayBackdropToken)
+            {
+                return;
+            }
+
+            if (preview is not null)
+            {
+                WebViewBackdropSnapshot.Source = preview;
+                WebViewBackdropSnapshot.Visibility = Visibility.Visible;
+            }
+        }
+        else if (isPrivacyLockOverlay)
+        {
+            WebViewBackdropSnapshot.Visibility = Visibility.Collapsed;
+            WebViewBackdropSnapshot.Source = null;
+        }
+
+        WebViewHostGrid.Visibility = Visibility.Collapsed;
+        ShellBodyGrid.Effect ??= new System.Windows.Media.Effects.BlurEffect
+        {
+            Radius = 10,
+            KernelType = System.Windows.Media.Effects.KernelType.Gaussian,
+            RenderingBias = System.Windows.Media.Effects.RenderingBias.Performance,
+        };
+    }
+
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
         DisableWindowChromeCaptionInterception();
+
+        if (PresentationSource.FromVisual(this) is System.Windows.Interop.HwndSource source)
+        {
+            source.AddHook(WndProc);
+        }
+
+        ApplyGlobalHideHotkey(_viewModel.EnableGlobalHideShortcut);
+    }
+
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == PrivacyAndShellHelpers.WmHotKey && wParam.ToInt32() == PrivacyAndShellHelpers.GlobalHideHotKeyId)
+        {
+            if (IsVisible && WindowState != WindowState.Minimized)
+            {
+                Hide();
+            }
+            else
+            {
+                RestoreFromTray();
+            }
+            handled = true;
+        }
+        return IntPtr.Zero;
+    }
+
+    private void ApplyGlobalHideHotkey(bool enabled)
+    {
+        if (enabled)
+        {
+            PrivacyAndShellHelpers.RegisterGlobalHideHotkey(this);
+        }
+        else
+        {
+            PrivacyAndShellHelpers.UnregisterGlobalHideHotkey(this);
+        }
     }
 
     private void DisableWindowChromeCaptionInterception()
@@ -254,6 +376,16 @@ public partial class MainWindow : FluentWindow
         DisableWindowChromeCaptionInterception();
         Dispatcher.BeginInvoke(DisableWindowChromeCaptionInterception, DispatcherPriority.ApplicationIdle);
         _maintenanceTimer.Start();
+
+        if (_viewModel.IsLockingFeatureEnabled && _viewModel.HasAppLockPassword)
+        {
+            _viewModel.LockApp();
+        }
+
+        if (_viewModel.AutomaticUpdates)
+        {
+            _ = _viewModel.CheckForUpdatesAsync();
+        }
 
         if (_viewModel.StartMinimized)
         {
@@ -366,6 +498,7 @@ public partial class MainWindow : FluentWindow
 
         ApplicationThemeManager.Apply(theme, backdrop, updateAccent: false);
         WindowBackdropType = backdrop;
+        _webViewManager.ApplyGlobalSettings(_viewModel.Settings, isDarkTheme: theme == ApplicationTheme.Dark);
 
         try
         {
@@ -392,9 +525,13 @@ public partial class MainWindow : FluentWindow
         }
 
         var isSilent = args.IsSilent || (service?.Config.MuteNotificationSound == true);
-        var isPrivate = _viewModel.PrivateNotifications
-            || (service?.Config.HideNotificationPreview == true)
-            || (service?.IsLocked == true);
+        var isPrivate = service is not null
+            ? service.Config.ShouldMaskNotificationPreview(_viewModel.PrivateNotifications, service.IsLocked)
+            : _viewModel.PrivateNotifications;
+
+        var iconFilePath = service is not null
+            ? ServiceIconService.GetLocalIconFilePath(service.Config.CatalogId, service.Config.Url)
+            : null;
 
         _notificationService.ShowNotification(
             args.ServiceId,
@@ -404,7 +541,36 @@ public partial class MainWindow : FluentWindow
             isSilent,
             isPrivate,
             args.Tag,
-            args.NotificationId);
+            args.NotificationId,
+            iconFilePath);
+
+        if (_viewModel.NotifyTaskBarOnMessage && !IsActive)
+        {
+            PrivacyAndShellHelpers.FlashTaskbarWindow(this);
+        }
+
+        if (_viewModel.IsTwoFactorAutoCatcherEnabled &&
+            PrivacyAndShellHelpers.TryExtractTwoFactorCode(
+                args.Title,
+                args.Body,
+                _viewModel.TwoFactorAutoCatcherMatcher,
+                out var otpCode))
+        {
+            try
+            {
+                System.Windows.Clipboard.SetText(otpCode);
+                if (_viewModel.ClipboardNotifications)
+                {
+                    _trayService.ShowBalloonNotification(
+                        "2FA Code Copied",
+                        $"Verification code {otpCode} copied to clipboard.");
+                }
+            }
+            catch
+            {
+                // Clipboard may be temporarily locked by another app
+            }
+        }
     }
 
     public void RestoreFromTray()
@@ -451,6 +617,7 @@ public partial class MainWindow : FluentWindow
 
     private void MainWindow_Closed(object? sender, EventArgs e)
     {
+        PrivacyAndShellHelpers.UnregisterGlobalHideHotkey(this);
         SystemEvents.PowerModeChanged -= SystemEvents_PowerModeChanged;
         SystemEvents.SessionSwitch -= SystemEvents_SessionSwitch;
         _maintenanceTimer.Stop();
@@ -461,6 +628,32 @@ public partial class MainWindow : FluentWindow
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        var actualKey = e.Key == Key.System ? e.SystemKey : e.Key;
+
+        if (PrivacyAndShellHelpers.MatchesShortcut(actualKey, Keyboard.Modifiers, _viewModel.ShortcutActivateNextService))
+        {
+            _ = _viewModel.ActivateNextServiceAsync();
+            e.Handled = true;
+            return;
+        }
+
+        if (PrivacyAndShellHelpers.MatchesShortcut(actualKey, Keyboard.Modifiers, _viewModel.ShortcutActivatePreviousService))
+        {
+            _ = _viewModel.ActivatePreviousServiceAsync();
+            e.Handled = true;
+            return;
+        }
+
+        // Ctrl+1..9 or Alt+1..9 (when ActivateServiceUsesAlt is enabled)
+        var targetModifier = _viewModel.ActivateServiceUsesAlt ? ModifierKeys.Alt : ModifierKeys.Control;
+        if (Keyboard.Modifiers == targetModifier && actualKey >= Key.D1 && actualKey <= Key.D9)
+        {
+            var index = (int)(actualKey - Key.D1);
+            _ = _viewModel.ActivateServiceByIndexAsync(index);
+            e.Handled = true;
+            return;
+        }
+
         if (e.Key == Key.K && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
         {
             _viewModel.OpenQuickSwitch();
@@ -472,6 +665,11 @@ public partial class MainWindow : FluentWindow
             if (_viewModel.CanQuickLockActiveService)
             {
                 _ = _viewModel.LockActiveServiceAsync();
+                e.Handled = true;
+            }
+            else if (_viewModel.IsLockingFeatureEnabled && _viewModel.HasAppLockPassword)
+            {
+                _viewModel.LockApp();
                 e.Handled = true;
             }
         }
@@ -810,7 +1008,8 @@ public partial class MainWindow : FluentWindow
             item.Name,
             target.Value.Environment,
             target.Value.Url,
-            closeOnDeactivate: true)
+            closeOnDeactivate: true,
+            activeServiceUrl: _webViewManager.GetActiveServiceUrl())
         {
             Owner = this,
         };
@@ -888,5 +1087,27 @@ public partial class MainWindow : FluentWindow
         var nextOffset = scrollViewer.VerticalOffset - (e.Delta * scrollSpeedFactor);
         scrollViewer.ScrollToVerticalOffset(Math.Clamp(nextOffset, 0, scrollViewer.ScrollableHeight));
         e.Handled = true;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LASTINPUTINFO
+    {
+        public uint cbSize;
+        public uint dwTime;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+
+    private static TimeSpan GetSystemIdleDuration()
+    {
+        var info = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<LASTINPUTINFO>() };
+        if (!GetLastInputInfo(ref info))
+        {
+            return TimeSpan.Zero;
+        }
+
+        var elapsedMs = unchecked((uint)Environment.TickCount - info.dwTime);
+        return TimeSpan.FromMilliseconds(elapsedMs);
     }
 }

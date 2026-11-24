@@ -50,21 +50,49 @@ public sealed class WebViewHostManager : IDisposable
     private readonly string _profilesRoot;
     private readonly string _extensionsLogPath;
     private BrowserExtensionService? _extensionService;
+    private DateTime _suppressExtensionPopupsUntilUtc = DateTime.MinValue;
     private string? _activeServiceId;
     private string _globalUserAgent = string.Empty;
     private string _downloadFolderPath = string.Empty;
     private bool _enableGpuAcceleration = true;
     private bool _useSelfSignedCertificates = false;
+    private bool _sandboxServices = false;
+    private bool _universalDarkMode = true;
+    private bool _isAppDarkTheme = true;
+    private bool _splitMode = false;
+    private int _splitColumns = 3;
+    private string _webRtcIpHandlingPolicy = "disable_non_proxied_udp";
+    private string _searchEngine = "startPage";
+    private string _locale = "en-US";
+    private bool _enableSpellchecking = true;
+    private string _spellcheckerLanguage = "en-us";
+    private bool _enableTranslator = false;
+    private string _translatorEngine = "LibreTranslate";
+    private string _translatorLanguage = "en";
+    private WebView2? _todosWebView;
 
     public event EventHandler<ServiceWebViewStateChangedEventArgs>? ServiceStateChanged;
     public event EventHandler<ServiceNotificationReceivedEventArgs>? ServiceNotificationReceived;
 
-    public void ApplyGlobalSettings(AppSettings settings)
+    public void ApplyGlobalSettings(AppSettings settings, bool? isDarkTheme = null)
     {
         _globalUserAgent = settings.UserAgentPref ?? string.Empty;
         _downloadFolderPath = settings.DownloadFolderPath ?? string.Empty;
         _enableGpuAcceleration = settings.EnableGpuAcceleration;
         _useSelfSignedCertificates = settings.UseSelfSignedCertificates;
+        _sandboxServices = settings.SandboxServices;
+        _universalDarkMode = settings.UniversalDarkMode;
+        if (isDarkTheme.HasValue) _isAppDarkTheme = isDarkTheme.Value;
+        _splitMode = settings.SplitMode;
+        _splitColumns = Math.Clamp(settings.SplitColumns, 1, 5);
+        _webRtcIpHandlingPolicy = settings.WebRtcIpHandlingPolicy ?? "disable_non_proxied_udp";
+        _searchEngine = settings.SearchEngine ?? "startPage";
+        _locale = settings.Locale ?? "en-US";
+        _enableSpellchecking = settings.EnableSpellchecking;
+        _spellcheckerLanguage = settings.SpellcheckerLanguage ?? "en-us";
+        _enableTranslator = settings.EnableTranslator;
+        _translatorEngine = settings.TranslatorEngine ?? "LibreTranslate";
+        _translatorLanguage = settings.TranslatorLanguage ?? "en";
 
         foreach (var (id, webView) in _webViews)
         {
@@ -74,12 +102,118 @@ public sealed class WebViewHostManager : IDisposable
                 {
                     webView.CoreWebView2.Profile.DefaultDownloadFolderPath = _downloadFolderPath;
                 }
+
+                _ = ApplyUniversalDarkModeAsync(webView.CoreWebView2);
             }
         }
+
+        UpdateSplitLayout();
 
         if (!settings.SuspendBackgroundWebViews)
         {
             ResumeAllSuspended();
+        }
+    }
+
+    public async Task EnsureTodosWebViewAsync(Panel container, string url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+
+        if (_todosWebView is null)
+        {
+            _todosWebView = new WebView2
+            {
+                DefaultBackgroundColor = System.Drawing.Color.Transparent,
+            };
+            container.Children.Clear();
+            container.Children.Add(_todosWebView);
+
+            try
+            {
+                var env = await GetOrCreateEnvironmentAsync("_todos");
+                await _todosWebView.EnsureCoreWebView2Async(env);
+                _todosWebView.CoreWebView2.Settings.IsStatusBarEnabled = false;
+                _todosWebView.CoreWebView2.Navigate(url);
+            }
+            catch
+            {
+                // Ignore WebView2 init errors for Todos drawer
+            }
+        }
+        else if (_todosWebView.CoreWebView2 is not null &&
+                 !string.Equals(_todosWebView.CoreWebView2.Source, url, StringComparison.OrdinalIgnoreCase))
+        {
+            _todosWebView.CoreWebView2.Navigate(url);
+        }
+    }
+
+    private void UpdateSplitLayout()
+    {
+        if (_hostContainer is not Grid hostGrid) return;
+
+        hostGrid.ColumnDefinitions.Clear();
+
+        if (!_splitMode || _webViews.Count <= 1)
+        {
+            foreach (var (id, wv) in _webViews)
+            {
+                Grid.SetColumn(wv, 0);
+                wv.Visibility = id == _activeServiceId ? Visibility.Visible : Visibility.Collapsed;
+            }
+            return;
+        }
+
+        var visibleIds = new List<string>();
+        if (!string.IsNullOrEmpty(_activeServiceId) && _webViews.ContainsKey(_activeServiceId))
+        {
+            visibleIds.Add(_activeServiceId);
+        }
+        foreach (var id in _webViews.Keys)
+        {
+            if (visibleIds.Count >= _splitColumns) break;
+            if (!visibleIds.Contains(id))
+            {
+                visibleIds.Add(id);
+            }
+        }
+
+        for (int i = 0; i < visibleIds.Count; i++)
+        {
+            hostGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        }
+
+        foreach (var (id, wv) in _webViews)
+        {
+            var col = visibleIds.IndexOf(id);
+            if (col >= 0)
+            {
+                Grid.SetColumn(wv, col);
+                wv.Visibility = Visibility.Visible;
+                if (_initialized.GetValueOrDefault(id))
+                {
+                    wv.CoreWebView2?.Resume();
+                }
+            }
+            else
+            {
+                wv.Visibility = Visibility.Collapsed;
+            }
+        }
+    }
+
+    private async Task ApplyUniversalDarkModeAsync(CoreWebView2 core)
+    {
+        try
+        {
+            var enable = _universalDarkMode && _isAppDarkTheme;
+            var js = enable
+                ? "(function(){let s=document.getElementById('ferdium-udm');if(!s){s=document.createElement('style');s.id='ferdium-udm';s.textContent=':root{color-scheme:dark;}';document.head&&document.head.appendChild(s);}})();"
+                : "(function(){let s=document.getElementById('ferdium-udm');if(s)s.remove();})();";
+            await core.ExecuteScriptAsync(js);
+        }
+        catch
+        {
+            // Ignore script errors on restricted pages
         }
     }
 
@@ -176,6 +310,21 @@ public sealed class WebViewHostManager : IDisposable
 
     public bool IsServiceLoaded(string serviceId) => _webViews.ContainsKey(serviceId);
 
+    /// <summary>
+    /// Initializes and navigates a service's WebView2 silently in the background (Visibility.Collapsed)
+    /// without changing the active visible service. Used for Load-on-Startup services, including locked ones,
+    /// so they can receive notifications without ever exposing their UI before unlock.
+    /// </summary>
+    public async Task PreloadServiceInBackgroundAsync(ServiceConfig service, bool isGlobalMuted)
+    {
+        if (_webViews.ContainsKey(service.Id))
+        {
+            return;
+        }
+
+        await CreateWebViewForServiceAsync(service, isGlobalMuted);
+    }
+
     public async Task ActivateServiceAsync(
         ServiceConfig service,
         bool isGlobalMuted,
@@ -225,7 +374,11 @@ public sealed class WebViewHostManager : IDisposable
             }
         }
 
-        if (prevWebViewToSuspend?.CoreWebView2 is not null &&
+        if (_splitMode)
+        {
+            UpdateSplitLayout();
+        }
+        else if (prevWebViewToSuspend?.CoreWebView2 is not null &&
             !string.IsNullOrEmpty(previousServiceId) &&
             _activeServiceId != previousServiceId)
         {
@@ -268,7 +421,7 @@ public sealed class WebViewHostManager : IDisposable
 
         try
         {
-            var profileFolderName = ResolveProfileFolderName(service);
+            var profileFolderName = ResolveProfileFolderName(service, _sandboxServices);
             _serviceProfileFolders[service.Id] = profileFolderName;
             var environment = await GetOrCreateEnvironmentAsync(profileFolderName);
             await webView.EnsureCoreWebView2Async(environment);
@@ -350,6 +503,7 @@ public sealed class WebViewHostManager : IDisposable
             core.NavigationCompleted += async (_, _) =>
             {
                 await EnsureNotificationPermissionAsync(core, service.Id, core.Source);
+                await ApplyUniversalDarkModeAsync(core);
 
                 ServiceStateChanged?.Invoke(this, new ServiceWebViewStateChangedEventArgs
                 {
@@ -360,6 +514,35 @@ public sealed class WebViewHostManager : IDisposable
                     CanGoBack = core.CanGoBack,
                     CanGoForward = core.CanGoForward,
                 });
+            };
+
+            core.ContextMenuRequested += (_, args) =>
+            {
+                var selection = args.ContextMenuTarget.SelectionText;
+                if (string.IsNullOrWhiteSpace(selection)) return;
+
+                var searchItem = core.Environment.CreateContextMenuItem(
+                    $"Search with {_searchEngine}",
+                    null,
+                    CoreWebView2ContextMenuItemKind.Command);
+                searchItem.CustomItemSelected += (_, _) =>
+                {
+                    OpenExternalUrl(PrivacyAndShellHelpers.BuildSearchUrl(selection, _searchEngine));
+                };
+                args.MenuItems.Add(searchItem);
+
+                if (_enableTranslator)
+                {
+                    var translateItem = core.Environment.CreateContextMenuItem(
+                        $"Translate selection ({_translatorLanguage})",
+                        null,
+                        CoreWebView2ContextMenuItemKind.Command);
+                    translateItem.CustomItemSelected += (_, _) =>
+                    {
+                        OpenExternalUrl(PrivacyAndShellHelpers.BuildTranslateUrl(selection, _translatorEngine, _translatorLanguage));
+                    };
+                    args.MenuItems.Add(translateItem);
+                }
             };
 
             core.PermissionRequested += (_, args) =>
@@ -420,6 +603,12 @@ public sealed class WebViewHostManager : IDisposable
 
             core.NewWindowRequested += (_, args) =>
             {
+                if (!args.IsUserInitiated && DateTime.UtcNow < _suppressExtensionPopupsUntilUtc)
+                {
+                    args.Handled = true;
+                    return;
+                }
+
                 if (!string.IsNullOrWhiteSpace(args.Uri))
                 {
                     // Keep same-host popups (e.g., OAuth/SSO) in-app; open external links in default browser
@@ -488,6 +677,40 @@ public sealed class WebViewHostManager : IDisposable
                     // Safe to ignore if already active
                 }
             }
+        }
+    }
+
+    public async Task<System.Windows.Media.ImageSource?> CaptureActivePreviewAsync()
+    {
+        if (string.IsNullOrEmpty(_activeServiceId)) return null;
+        if (!_webViews.TryGetValue(_activeServiceId, out var webView) ||
+            !_initialized.GetValueOrDefault(_activeServiceId) ||
+            webView.CoreWebView2 is null ||
+            webView.Visibility != Visibility.Visible)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var ms = new MemoryStream();
+            await webView.CoreWebView2.CapturePreviewAsync(
+                CoreWebView2CapturePreviewImageFormat.Png,
+                ms);
+            ms.Position = 0;
+
+            var bitmap = new System.Windows.Media.Imaging.BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+            bitmap.DecodePixelWidth = 960;
+            bitmap.StreamSource = ms;
+            bitmap.EndInit();
+            bitmap.Freeze();
+            return bitmap;
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -665,11 +888,14 @@ public sealed class WebViewHostManager : IDisposable
         }
     }
 
-    public static string ResolveProfileFolderName(ServiceConfig service)
+    public static string ResolveProfileFolderName(ServiceConfig service) =>
+        ResolveProfileFolderName(service, sandboxServices: false);
+
+    public static string ResolveProfileFolderName(ServiceConfig service, bool sandboxServices)
     {
         if (string.IsNullOrWhiteSpace(service.SessionProfileKey))
         {
-            return "_shared";
+            return sandboxServices ? SanitizeProfileKey(service.Id) : "_shared";
         }
 
         var trimmed = service.SessionProfileKey.Trim();
@@ -711,11 +937,21 @@ public sealed class WebViewHostManager : IDisposable
         {
             browserArgs += " --ignore-certificate-errors";
         }
+        if (!string.IsNullOrWhiteSpace(_webRtcIpHandlingPolicy) &&
+            !string.Equals(_webRtcIpHandlingPolicy, "default", StringComparison.OrdinalIgnoreCase))
+        {
+            browserArgs += $" --force-webrtc-ip-handling-policy={_webRtcIpHandlingPolicy}";
+        }
+        if (!_enableSpellchecking)
+        {
+            browserArgs += " --disable-spell-checking";
+        }
 
         var envOptions = new CoreWebView2EnvironmentOptions
         {
             AdditionalBrowserArguments = browserArgs,
             AreBrowserExtensionsEnabled = true,
+            Language = !string.IsNullOrWhiteSpace(_locale) ? _locale : null,
         };
 
         var createTask = CoreWebView2Environment.CreateAsync(null, profileDir, envOptions);
@@ -755,6 +991,28 @@ public sealed class WebViewHostManager : IDisposable
                 await SyncExtensionsToProfileAsync(profileFolder, webView.CoreWebView2.Profile);
             }
         }
+    }
+
+    public string? GetActiveServiceUrl()
+    {
+        if (!string.IsNullOrEmpty(_activeServiceId) &&
+            TryGetCore(_activeServiceId, out var activeCore) &&
+            !string.IsNullOrWhiteSpace(activeCore.Source))
+        {
+            return activeCore.Source;
+        }
+
+        foreach (var (serviceId, webView) in _webViews)
+        {
+            if (_initialized.GetValueOrDefault(serviceId) &&
+                webView.CoreWebView2 is not null &&
+                !string.IsNullOrWhiteSpace(webView.CoreWebView2.Source))
+            {
+                return webView.CoreWebView2.Source;
+            }
+        }
+
+        return null;
     }
 
     public async Task<(CoreWebView2Environment Environment, string Url)?> ResolveExtensionPageTargetAsync(
@@ -896,6 +1154,7 @@ public sealed class WebViewHostManager : IDisposable
 
                     try
                     {
+                        _suppressExtensionPopupsUntilUtc = DateTime.UtcNow.AddSeconds(8);
                         runtimeExt = await profile.AddBrowserExtensionAsync(ext.UnpackedPath);
                         profileMap[ext.Id] = runtimeExt.Id;
                         loadedById[runtimeExt.Id] = runtimeExt;
@@ -934,6 +1193,7 @@ public sealed class WebViewHostManager : IDisposable
                 {
                     try
                     {
+                        _suppressExtensionPopupsUntilUtc = DateTime.UtcNow.AddSeconds(8);
                         await loaded.RemoveAsync();
                     }
                     catch (Exception ex)
@@ -971,6 +1231,9 @@ public sealed class WebViewHostManager : IDisposable
             _hostContainer.Children.Remove(webView);
             webView.Dispose();
         }
+
+        _todosWebView?.Dispose();
+        _todosWebView = null;
 
         _webViews.Clear();
         _initialized.Clear();

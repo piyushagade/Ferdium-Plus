@@ -73,6 +73,17 @@
                         HorizontalAlignment="Left"
                         Margin="16,0,0,0"
                         WindowChrome.IsHitTestVisibleInChrome="True">
+                <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                           Width="30"
+                           Height="30"
+                           Padding="0"
+                           Margin="0,0,6,0"
+                           Command="{Binding ToggleSidebarCollapsedCommand}"
+                           Visibility="{Binding IsSidebarCollapsed, Converter={StaticResource BoolToVisibility}}"
+                           ToolTip="Expand Sidebar">
+                    <ui:SymbolIcon Symbol="PanelLeft20" FontSize="16" />
+                </ui:Button>
+
                 <Image Source="pack://application:,,,/Assets/app-icon.png"
                        Width="22"
                        Height="22"
@@ -246,17 +257,317 @@
         </Grid>
 
         <!-- ==================== MAIN SHELL BODY ==================== -->
-        <Grid Grid.Row="1">
+        <Grid x:Name="ShellBodyGrid" Grid.Row="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
+            <!-- WinUI 3 Top Horizontal NavigationView Rail (same appearance as vertical rail) -->
+            <Grid Grid.Row="0"
+                  Grid.Column="0"
+                  Grid.ColumnSpan="2"
+                  Height="{Binding ServiceRibbonWidth}"
+                  Margin="8,0,8,4"
+                  Visibility="{Binding ShowHorizontalSidebar, Converter={StaticResource BoolToVisibility}}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <!-- Horizontal Service Tabs -->
+                <ScrollViewer Grid.Column="0"
+                              HorizontalScrollBarVisibility="Hidden"
+                              VerticalScrollBarVisibility="Disabled">
+                    <ItemsControl ItemsSource="{Binding VisibleServices}"
+                                  HorizontalAlignment="{Binding EffectiveSidebarServicesHorizontalAlignment}"
+                                  VerticalAlignment="Center">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="2,0" Opacity="{Binding DragOpacity}">
+                                    <!-- Signature WinUI 3 3px Active Accent Pill (horizontal bottom) -->
+                                    <Border Height="3"
+                                            Width="20"
+                                            CornerRadius="2"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Bottom"
+                                            Background="{DynamicResource SystemAccentColorPrimaryBrush}"
+                                            Visibility="{Binding IsActive, Converter={StaticResource BoolToVisibility}}" />
+
+                                    <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                                               VerticalAlignment="Stretch"
+                                               VerticalContentAlignment="Center"
+                                               Padding="{Binding DataContext.EffectiveSidebarItemPadding, RelativeSource={RelativeSource AncestorType=Window}}"
+                                               Margin="0,2,0,4"
+                                               Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Window}}"
+                                               Command="{Binding DataContext.ActivateServiceCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                               CommandParameter="{Binding}">
+                                        <ui:Button.ToolTip>
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" />
+                                                <TextBlock Text="{Binding StatusLabel}" FontSize="11" Opacity="0.75" />
+                                                <TextBlock Text="{Binding SessionBadgeLabel}"
+                                                           FontSize="10.5"
+                                                           Opacity="0.8"
+                                                           Margin="0,2,0,0"
+                                                           Visibility="{Binding HasSharedSession, Converter={StaticResource BoolToVisibility}}" />
+                                            </StackPanel>
+                                        </ui:Button.ToolTip>
+                                        <ui:Button.ContextMenu>
+                                            <ContextMenu>
+                                                <MenuItem Header="Reload"
+                                                          Command="{Binding PlacementTarget.Tag.ReloadServiceCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                          CommandParameter="{Binding}" />
+                                                <MenuItem Header="{Binding HibernateMenuLabel}"
+                                                          Command="{Binding PlacementTarget.Tag.ToggleHibernateServiceCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                          CommandParameter="{Binding}" />
+                                                <MenuItem Header="{Binding MuteMenuLabel}"
+                                                          Command="{Binding PlacementTarget.Tag.ToggleServiceMuteCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                          CommandParameter="{Binding}" />
+                                                <Separator />
+                                                <MenuItem Header="Edit Service / Account…"
+                                                          Command="{Binding PlacementTarget.Tag.OpenEditServiceCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                          CommandParameter="{Binding}" />
+                                                <MenuItem Header="Add Another Account…"
+                                                          Command="{Binding PlacementTarget.Tag.OpenAddAnotherAccountCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                          CommandParameter="{Binding}" />
+                                                <MenuItem Header="Share Login Session…"
+                                                          Command="{Binding PlacementTarget.Tag.OpenSessionShareCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                          CommandParameter="{Binding}" />
+                                                <MenuItem Header="Lock Service"
+                                                          Visibility="{Binding CanLockNow, Converter={StaticResource BoolToVisibility}}"
+                                                          Command="{Binding PlacementTarget.Tag.LockServiceCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                          CommandParameter="{Binding}" />
+                                                <MenuItem Header="{Binding EnableMenuLabel}"
+                                                          Command="{Binding PlacementTarget.Tag.ToggleServiceEnabledCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                          CommandParameter="{Binding}" />
+                                                <MenuItem Header="Open DevTools"
+                                                          Command="{Binding PlacementTarget.Tag.OpenDevToolsForServiceCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                          CommandParameter="{Binding}" />
+                                                <Separator />
+                                                <MenuItem Header="Remove Service"
+                                                          Command="{Binding PlacementTarget.Tag.RemoveServiceCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                          CommandParameter="{Binding}" />
+                                            </ContextMenu>
+                                        </ui:Button.ContextMenu>
+
+                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                            <Grid Width="{Binding DataContext.EffectiveIconBoxSize, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                  Height="{Binding DataContext.EffectiveIconBoxSize, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                  Opacity="{Binding DataContext.EffectiveServiceIconDimOpacity, RelativeSource={RelativeSource AncestorType=Window}}">
+                                                <!-- Real Brand Icon -->
+                                                <Image Source="{Binding IconImage}"
+                                                       Width="{Binding DataContext.EffectiveIconPixels, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                       Height="{Binding DataContext.EffectiveIconPixels, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                       Stretch="Uniform"
+                                                       RenderOptions.BitmapScalingMode="HighQuality"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"
+                                                       Opacity="{Binding IsHibernated, Converter={StaticResource HibernatedOpacity}}"
+                                                       Visibility="{Binding HasIcon, Converter={StaticResource BoolToVisibility}}" />
+
+                                                <!-- Fallback Monogram -->
+                                                <Border Width="{Binding DataContext.EffectiveIconPixels, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        Height="{Binding DataContext.EffectiveIconPixels, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CornerRadius="7"
+                                                        Background="{Binding AccentBrush}"
+                                                        Opacity="{Binding IsHibernated, Converter={StaticResource HibernatedOpacity}}"
+                                                        Visibility="{Binding HasIcon, Converter={StaticResource BoolToVisibility}, ConverterParameter=Inverse}">
+                                                    <TextBlock Text="{Binding Monogram}"
+                                                               Foreground="White"
+                                                               FontSize="11.5"
+                                                               FontWeight="SemiBold"
+                                                               HorizontalAlignment="Center"
+                                                               VerticalAlignment="Center" />
+                                                </Border>
+
+                                                <!-- Unread Count Badge -->
+                                                <Border HorizontalAlignment="Right"
+                                                        VerticalAlignment="Top"
+                                                        Margin="0,-3,-3,0"
+                                                        MinWidth="17"
+                                                        Height="17"
+                                                        Padding="4,0"
+                                                        CornerRadius="9"
+                                                        Background="#E74856"
+                                                        Visibility="{Binding HasBadge, Converter={StaticResource BoolToVisibility}}">
+                                                    <TextBlock Text="{Binding BadgeText}"
+                                                               Foreground="White"
+                                                               FontSize="10"
+                                                               FontWeight="SemiBold"
+                                                               HorizontalAlignment="Center"
+                                                               VerticalAlignment="Center" />
+                                                </Border>
+
+                                                <!-- Indirect Activity Dot -->
+                                                <Ellipse Width="8"
+                                                         Height="8"
+                                                         Fill="#E74856"
+                                                         HorizontalAlignment="Right"
+                                                         VerticalAlignment="Top"
+                                                         Visibility="{Binding HasIndirectDot, Converter={StaticResource BoolToVisibility}}" />
+
+                                                <!-- Multi-Account Corner Badge Pill -->
+                                                <Border HorizontalAlignment="Right"
+                                                        VerticalAlignment="Bottom"
+                                                        Margin="0,0,-4,-3"
+                                                        MinWidth="16"
+                                                        Height="16"
+                                                        Padding="3,0"
+                                                        CornerRadius="8"
+                                                        BorderThickness="1.5"
+                                                        BorderBrush="{DynamicResource SolidBackgroundFillColorBaseBrush}"
+                                                        Background="{Binding AccountBadgeBrush}"
+                                                        Visibility="{Binding HasAccountBadge, Converter={StaticResource BoolToVisibility}}">
+                                                    <TextBlock Text="{Binding AccountBadgeText}"
+                                                               Foreground="White"
+                                                               FontSize="9"
+                                                               FontWeight="Bold"
+                                                               HorizontalAlignment="Center"
+                                                               VerticalAlignment="Center" />
+                                                </Border>
+
+                                                <!-- Locked Service Indicator -->
+                                                <Border HorizontalAlignment="Left"
+                                                        VerticalAlignment="Top"
+                                                        Margin="-3,-3,0,0"
+                                                        Width="16"
+                                                        Height="16"
+                                                        CornerRadius="8"
+                                                        BorderThickness="1.5"
+                                                        BorderBrush="{DynamicResource SolidBackgroundFillColorBaseBrush}"
+                                                        Background="#3A3F4B"
+                                                        Visibility="{Binding IsLocked, Converter={StaticResource BoolToVisibility}}">
+                                                    <ui:SymbolIcon Symbol="LockClosed16"
+                                                                   FontSize="9"
+                                                                   Foreground="White"
+                                                                   HorizontalAlignment="Center"
+                                                                   VerticalAlignment="Center" />
+                                                </Border>
+                                            </Grid>
+
+                                            <TextBlock Text="{Binding DisplayName}"
+                                                       Margin="8,0,4,0"
+                                                       MaxWidth="112"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="13"
+                                                       Visibility="{Binding DataContext.ShowServiceNames, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisibility}}" />
+                                        </StackPanel>
+                                    </ui:Button>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <!-- Right-Side Horizontal Footer Actions (mirrors vertical sidebar footer) -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="6,0,0,0">
+                    <Border Width="1"
+                            Height="22"
+                            Margin="2,0,8,0"
+                            Background="{DynamicResource DividerStrokeColorDefaultBrush}" />
+
+                    <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                               Width="36" Height="36" Padding="0" Margin="1,0"
+                               Command="{Binding OpenAddServiceCommand}"
+                               Visibility="{Binding HideRecipesButton, Converter={StaticResource BoolToVisibility}, ConverterParameter=Inverse}"
+                               ToolTip="Add Service">
+                        <ui:SymbolIcon Symbol="AddSquare20" FontSize="17" />
+                    </ui:Button>
+
+                    <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                               Width="36" Height="36" Padding="0" Margin="1,0"
+                               Command="{Binding ToggleGlobalMuteCommand}"
+                               Visibility="{Binding HideNotificationsButton, Converter={StaticResource BoolToVisibility}, ConverterParameter=Inverse}"
+                               ToolTip="Mute / Unmute All Audio &amp; Notifications">
+                        <Grid>
+                            <ui:SymbolIcon Symbol="Alert20" FontSize="17"
+                                           Visibility="{Binding IsGlobalMuted, Converter={StaticResource BoolToVisibility}, ConverterParameter=Inverse}" />
+                            <ui:SymbolIcon Symbol="AlertOff20" FontSize="17" Foreground="#E74856"
+                                           Visibility="{Binding IsGlobalMuted, Converter={StaticResource BoolToVisibility}}" />
+                        </Grid>
+                    </ui:Button>
+
+                    <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                               Width="36" Height="36" Padding="0" Margin="1,0"
+                               Command="{Binding ToggleSplitModeCommand}"
+                               Visibility="{Binding HideSplitModeButton, Converter={StaticResource BoolToVisibility}, ConverterParameter=Inverse}"
+                               ToolTip="Toggle Split Mode">
+                        <ui:SymbolIcon Symbol="Grid20" FontSize="17" />
+                    </ui:Button>
+
+                    <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                               Width="36" Height="36" Padding="0" Margin="1,0"
+                               Command="{Binding OpenDownloadsFolderCommand}"
+                               Visibility="{Binding HideDownloadButton, Converter={StaticResource BoolToVisibility}, ConverterParameter=Inverse}"
+                               ToolTip="Open Downloads Folder">
+                        <ui:SymbolIcon Symbol="ArrowDownload20" FontSize="17" />
+                    </ui:Button>
+
+                    <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                               Width="36" Height="36" Padding="0" Margin="1,0"
+                               Command="{Binding ToggleTodosDrawerCommand}"
+                               Visibility="{Binding EnableTodos, Converter={StaticResource BoolToVisibility}}"
+                               ToolTip="Toggle Ferdium Todos">
+                        <ui:SymbolIcon Symbol="CheckmarkCircle20" FontSize="17" />
+                    </ui:Button>
+
+                    <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                               Width="36" Height="36" Padding="0" Margin="1,0"
+                               Command="{Binding LockAppCommand}"
+                               Visibility="{Binding IsLockingFeatureEnabled, Converter={StaticResource BoolToVisibility}}"
+                               ToolTip="Lock Ferdium (Ctrl+Shift+L)">
+                        <ui:SymbolIcon Symbol="LockClosed20" FontSize="17" />
+                    </ui:Button>
+
+                    <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                               Width="36" Height="36" Padding="0" Margin="1,0"
+                               Command="{Binding HibernateInactiveServicesCommand}"
+                               ToolTip="Hibernate Inactive Services (Free RAM)">
+                        <ui:SymbolIcon Symbol="Broom20" FontSize="17" />
+                    </ui:Button>
+
+                    <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                               Width="36" Height="36" Padding="0" Margin="1,0"
+                               Command="{Binding ToggleSidebarCollapsedCommand}"
+                               Visibility="{Binding HideCollapseButton, Converter={StaticResource BoolToVisibility}, ConverterParameter=Inverse}"
+                               ToolTip="Collapse Sidebar">
+                        <ui:SymbolIcon Symbol="PanelLeft20" FontSize="17" />
+                    </ui:Button>
+
+                    <Grid Margin="1,0"
+                          Visibility="{Binding HideSettingsButton, Converter={StaticResource BoolToVisibility}, ConverterParameter=Inverse}">
+                        <Border Height="3" Width="18" CornerRadius="2"
+                                HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                                Background="{DynamicResource SystemAccentColorPrimaryBrush}"
+                                Visibility="{Binding IsSettingsOpen, Converter={StaticResource BoolToVisibility}}" />
+                        <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                                   Width="36" Height="36" Padding="0"
+                                   Command="{Binding OpenSettingsCommand}"
+                                   ToolTip="Settings (Ctrl+,)">
+                            <ui:SymbolIcon Symbol="Settings20" FontSize="17" />
+                        </ui:Button>
+                    </Grid>
+                </StackPanel>
+            </Grid>
+
             <!-- WinUI 3 Left NavigationView Rail -->
-            <Grid Grid.Column="0"
+            <Grid Grid.Row="1"
+                  Grid.Column="0"
                   Width="{Binding EffectiveSidebarWidth}"
                   MinWidth="{Binding ServiceRibbonWidth}"
-                  Margin="0,2,0,10">
+                  Margin="0,2,0,10"
+                  Visibility="{Binding ShowVerticalSidebar, Converter={StaticResource BoolToVisibility}}">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
@@ -266,7 +577,8 @@
                 <ScrollViewer Grid.Row="0"
                               VerticalScrollBarVisibility="Hidden"
                               HorizontalScrollBarVisibility="Disabled">
-                    <ItemsControl ItemsSource="{Binding VisibleServices}">
+                    <ItemsControl ItemsSource="{Binding VisibleServices}"
+                                  VerticalAlignment="{Binding EffectiveSidebarServicesVerticalAlignment}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
                                 <Grid Margin="0,2"
@@ -348,6 +660,9 @@
                                                           Visibility="{Binding CanLockNow, Converter={StaticResource BoolToVisibility}}"
                                                           Command="{Binding PlacementTarget.Tag.LockServiceCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                                                           CommandParameter="{Binding}" />
+                                                <MenuItem Header="{Binding EnableMenuLabel}"
+                                                          Command="{Binding PlacementTarget.Tag.ToggleServiceEnabledCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                                          CommandParameter="{Binding}" />
                                                 <MenuItem Header="Open DevTools"
                                                           Command="{Binding PlacementTarget.Tag.OpenDevToolsForServiceCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                                                           CommandParameter="{Binding}" />
@@ -360,7 +675,8 @@
 
                                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                             <Grid Width="{Binding DataContext.EffectiveIconBoxSize, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                  Height="{Binding DataContext.EffectiveIconBoxSize, RelativeSource={RelativeSource AncestorType=Window}}">
+                                                  Height="{Binding DataContext.EffectiveIconBoxSize, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                  Opacity="{Binding DataContext.EffectiveServiceIconDimOpacity, RelativeSource={RelativeSource AncestorType=Window}}">
                                                 <!-- Real Brand Icon -->
                                                 <Image Source="{Binding IconImage}"
                                                        Width="{Binding DataContext.EffectiveIconPixels, RelativeSource={RelativeSource AncestorType=Window}}"
@@ -508,9 +824,64 @@
                                Height="38"
                                Padding="0"
                                Margin="0,1"
+                               Command="{Binding ToggleSplitModeCommand}"
+                               Visibility="{Binding HideSplitModeButton, Converter={StaticResource BoolToVisibility}, ConverterParameter=Inverse}"
+                               ToolTip="Toggle Split Mode">
+                        <ui:SymbolIcon Symbol="Grid20" FontSize="17" />
+                    </ui:Button>
+
+                    <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                               HorizontalAlignment="Stretch"
+                               Height="38"
+                               Padding="0"
+                               Margin="0,1"
+                               Command="{Binding OpenDownloadsFolderCommand}"
+                               Visibility="{Binding HideDownloadButton, Converter={StaticResource BoolToVisibility}, ConverterParameter=Inverse}"
+                               ToolTip="Open Downloads Folder">
+                        <ui:SymbolIcon Symbol="ArrowDownload20" FontSize="17" />
+                    </ui:Button>
+
+                    <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                               HorizontalAlignment="Stretch"
+                               Height="38"
+                               Padding="0"
+                               Margin="0,1"
+                               Command="{Binding ToggleTodosDrawerCommand}"
+                               Visibility="{Binding EnableTodos, Converter={StaticResource BoolToVisibility}}"
+                               ToolTip="Toggle Ferdium Todos">
+                        <ui:SymbolIcon Symbol="CheckmarkCircle20" FontSize="17" />
+                    </ui:Button>
+
+                    <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                               HorizontalAlignment="Stretch"
+                               Height="38"
+                               Padding="0"
+                               Margin="0,1"
+                               Command="{Binding LockAppCommand}"
+                               Visibility="{Binding IsLockingFeatureEnabled, Converter={StaticResource BoolToVisibility}}"
+                               ToolTip="Lock Ferdium (Ctrl+Shift+L)">
+                        <ui:SymbolIcon Symbol="LockClosed20" FontSize="17" />
+                    </ui:Button>
+
+                    <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                               HorizontalAlignment="Stretch"
+                               Height="38"
+                               Padding="0"
+                               Margin="0,1"
                                Command="{Binding HibernateInactiveServicesCommand}"
                                ToolTip="Hibernate Inactive Services (Free RAM)">
                         <ui:SymbolIcon Symbol="Broom20" FontSize="17" />
+                    </ui:Button>
+
+                    <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                               HorizontalAlignment="Stretch"
+                               Height="38"
+                               Padding="0"
+                               Margin="0,1"
+                               Command="{Binding ToggleSidebarCollapsedCommand}"
+                               Visibility="{Binding HideCollapseButton, Converter={StaticResource BoolToVisibility}, ConverterParameter=Inverse}"
+                               ToolTip="Collapse Sidebar">
+                        <ui:SymbolIcon Symbol="PanelLeft20" FontSize="17" />
                     </ui:Button>
 
                     <Grid Margin="0,1"
@@ -537,10 +908,12 @@
             </Grid>
 
             <!-- ==================== ELEVATED WINUI 3 CONTENT PANE ==================== -->
-            <Border Grid.Column="1"
+            <Border Grid.Row="1"
+                    Grid.Column="1"
                     BorderThickness="1,1,0,0"
                     BorderBrush="{DynamicResource SurfaceStrokeColorDefaultBrush}"
                     Background="{DynamicResource LayerFillColorDefaultBrush}"
+                    Padding="{Binding EffectiveWebviewPadding}"
                     ClipToBounds="True">
                 <Border.Style>
                     <Style TargetType="Border">
@@ -549,14 +922,55 @@
                         <Setter Property="CornerRadius" Value="0" />
                         <Style.Triggers>
                             <DataTrigger Binding="{Binding ShowWebControls}" Value="True">
-                                <Setter Property="CornerRadius" Value="8,0,0,0" />
+                                <Setter Property="CornerRadius" Value="{Binding EffectiveWebviewCornerRadius}" />
                             </DataTrigger>
                         </Style.Triggers>
                     </Style>
                 </Border.Style>
                 <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Docked Workspaces Drawer (when AlwaysShowWorkspaces is enabled) -->
+                    <Border Grid.Column="0"
+                            BorderThickness="0,0,1,0"
+                            BorderBrush="{DynamicResource DividerStrokeColorDefaultBrush}"
+                            Padding="8,10"
+                            Visibility="{Binding AlwaysShowWorkspaces, Converter={StaticResource BoolToVisibility}}">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Width" Value="180" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding UseCompactWorkspaceDrawer}" Value="True">
+                                        <Setter Property="Width" Value="116" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <ItemsControl ItemsSource="{Binding Workspaces}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                                                   HorizontalAlignment="Stretch"
+                                                   HorizontalContentAlignment="Left"
+                                                   Padding="8,6"
+                                                   Margin="0,2"
+                                                   Command="{Binding DataContext.SelectWorkspaceCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                   CommandParameter="{Binding}">
+                                            <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" FontSize="12.5" />
+                                        </ui:Button>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </Border>
+
                     <!-- Active Service View (WebControls + WebView2) -->
-                    <Grid>
+                    <Grid Grid.Column="1">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
@@ -647,7 +1061,7 @@
                             <!-- Empty / Hibernated State -->
                             <StackPanel HorizontalAlignment="Center"
                                         VerticalAlignment="Center"
-                                        Visibility="{Binding HasActiveService, Converter={StaticResource BoolToVisibility}, ConverterParameter=Inverse}">
+                                        Visibility="{Binding ShowEmptyState, Converter={StaticResource BoolToVisibility}}">
                                 <ui:SymbolIcon Symbol="ChatMultiple24" FontSize="48" Opacity="0.45" Margin="0,0,0,14" />
                                 <TextBlock Text="Select a service or add a new one"
                                            FontFamily="Segoe UI Variable Display, Segoe UI"
@@ -666,15 +1080,121 @@
                                            Command="{Binding OpenAddServiceCommand}" />
                             </StackPanel>
 
+                            <!-- Inline Locked Service State (shown when active service locks by user or timeout) -->
+                            <Border Width="380"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    CornerRadius="10"
+                                    Padding="28"
+                                    BorderThickness="1"
+                                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                                    Visibility="{Binding ShowLockedPane, Converter={StaticResource BoolToVisibility}}">
+                                <StackPanel HorizontalAlignment="Stretch">
+                                    <Grid Width="56" Height="56" HorizontalAlignment="Center" Margin="0,0,0,14">
+                                        <Image Source="{Binding UnlockTargetService.IconImage}"
+                                               Width="48"
+                                               Height="48"
+                                               Stretch="Uniform"
+                                               RenderOptions.BitmapScalingMode="HighQuality" />
+                                        <Border HorizontalAlignment="Right"
+                                                VerticalAlignment="Bottom"
+                                                Width="22"
+                                                Height="22"
+                                                CornerRadius="11"
+                                                Background="{DynamicResource SystemAccentColorPrimaryBrush}">
+                                            <ui:SymbolIcon Symbol="LockClosed16" FontSize="12" Foreground="White" />
+                                        </Border>
+                                    </Grid>
+
+                                    <TextBlock Text="{Binding UnlockTargetService.DisplayName}"
+                                               FontFamily="Segoe UI Variable Display, Segoe UI"
+                                               FontSize="20"
+                                               FontWeight="SemiBold"
+                                               HorizontalAlignment="Center" />
+                                    <TextBlock Text="{Binding UnlockPromptSubtitle}"
+                                               FontSize="12.5"
+                                               TextWrapping="Wrap"
+                                               TextAlignment="Center"
+                                               Margin="0,4,0,18"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+
+                                    <!-- Passcode / Password inline unlock -->
+                                    <StackPanel Visibility="{Binding IsUnlockSecretMode, Converter={StaticResource BoolToVisibility}}">
+                                        <PasswordBox x:Name="InlineUnlockSecretBox"
+                                                     Padding="10,8"
+                                                     Margin="0,0,0,12"
+                                                     PasswordChanged="UnlockSecretBox_PasswordChanged"
+                                                     KeyDown="UnlockSecretBox_KeyDown" />
+                                        <ui:Button Appearance="Primary"
+                                                   HorizontalAlignment="Stretch"
+                                                   Content="Unlock"
+                                                   Command="{Binding SubmitServiceUnlockCommand}" />
+                                    </StackPanel>
+
+                                    <!-- Windows Hello inline unlock -->
+                                    <ui:Button Appearance="Primary"
+                                               HorizontalAlignment="Stretch"
+                                               Content="Unlock with Windows Hello"
+                                               Visibility="{Binding IsUnlockWindowsHelloMode, Converter={StaticResource BoolToVisibility}}"
+                                               Command="{Binding SubmitServiceUnlockCommand}" />
+
+                                    <TextBlock Text="{Binding UnlockErrorMessage}"
+                                               Foreground="#FF6B72"
+                                               FontSize="12"
+                                               FontWeight="SemiBold"
+                                               TextWrapping="Wrap"
+                                               TextAlignment="Center"
+                                               Margin="0,10,0,0"
+                                               Visibility="{Binding HasUnlockError, Converter={StaticResource BoolToVisibility}}" />
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Blurred snapshot of active WebView2 shown behind translucent popups -->
+                            <Image x:Name="WebViewBackdropSnapshot"
+                                   Stretch="UniformToFill"
+                                   Visibility="Collapsed"
+                                   IsHitTestVisible="False">
+                                <Image.Effect>
+                                    <BlurEffect Radius="24" KernelType="Gaussian" RenderingBias="Performance" />
+                                </Image.Effect>
+                            </Image>
+
                             <Grid x:Name="WebViewHostGrid" />
 
                             <!-- Loading Progress Bar -->
                             <ProgressBar Height="2"
                                          VerticalAlignment="Top"
                                          IsIndeterminate="True"
+                                         Foreground="{Binding ProgressbarAccentColor, Converter={StaticResource HexToBrush}}"
                                          Visibility="{Binding ActiveService.IsLoading, FallbackValue=Collapsed, Converter={StaticResource BoolToVisibility}}" />
                         </Grid>
                     </Grid>
+
+                    <!-- Right-hand Collapsible Ferdium Todos Drawer -->
+                    <Border Grid.Column="2"
+                            Width="340"
+                            BorderThickness="1,0,0,0"
+                            BorderBrush="{DynamicResource DividerStrokeColorDefaultBrush}"
+                            Visibility="{Binding IsTodosDrawerOpen, Converter={StaticResource BoolToVisibility}}">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="36" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <Grid Grid.Row="0" Margin="10,0">
+                                <TextBlock Text="Ferdium Todos" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center" />
+                                <ui:Button Style="{StaticResource WinUiSubtleButton}"
+                                           HorizontalAlignment="Right"
+                                           Width="28" Height="28" Padding="0"
+                                           Command="{Binding ToggleTodosDrawerCommand}"
+                                           ToolTip="Close Todos">
+                                    <ui:SymbolIcon Symbol="Dismiss20" FontSize="14" />
+                                </ui:Button>
+                            </Grid>
+                            <Grid x:Name="TodosWebViewHost" Grid.Row="1" />
+                        </Grid>
+                    </Border>
                 </Grid>
             </Border>
         </Grid>
@@ -684,7 +1204,7 @@
         <!-- 0. WinUI 3 Settings Dialog (Full 7-Tab Ferdium Settings) -->
         <Grid Grid.Row="0"
               Grid.RowSpan="2"
-              Background="#66000000"
+              Background="#3D000000"
               Visibility="{Binding IsSettingsOpen, Converter={StaticResource BoolToVisibility}}"
               MouseDown="OverlayBackdrop_MouseDown">
             <Border Width="820"
@@ -1178,6 +1698,26 @@
                                               SelectedValue="{Binding WakeUpHibernationStrategySeconds}" />
                                 </ui:CardControl>
 
+                                <ui:CardControl Style="{StaticResource WinUiSettingsCard}" Icon="{ui:SymbolIcon Clock24}">
+                                    <ui:CardControl.Header>
+                                        <StackPanel>
+                                            <TextBlock Text="Splay wake-up hibernation timers" FontSize="14" FontWeight="Medium" />
+                                            <TextBlock Text="Stagger background service wake-ups to avoid simultaneous CPU spikes" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                        </StackPanel>
+                                    </ui:CardControl.Header>
+                                    <ui:ToggleSwitch IsChecked="{Binding WakeUpHibernationSplay}" />
+                                </ui:CardControl>
+
+                                <ui:CardControl Style="{StaticResource WinUiSettingsCard}" Icon="{ui:SymbolIcon Apps24}">
+                                    <ui:CardControl.Header>
+                                        <StackPanel>
+                                            <TextBlock Text="Enable long-press service hint" FontSize="14" FontWeight="Medium" />
+                                            <TextBlock Text="Display extended service hint details on sidebar hover/press" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                        </StackPanel>
+                                    </ui:CardControl.Header>
+                                    <ui:ToggleSwitch IsChecked="{Binding EnableLongPressServiceHint}" />
+                                </ui:CardControl>
+
                                 <ui:CardControl Style="{StaticResource WinUiSettingsCard}" Icon="{ui:SymbolIcon Shield24}">
                                     <ui:CardControl.Header>
                                         <StackPanel>
@@ -1370,6 +1910,50 @@
 
                                 <ui:CardControl Style="{StaticResource WinUiSettingsCard}" Icon="{ui:SymbolIcon PanelLeft24}">
                                     <ui:CardControl.Header>
+                                        <TextBlock Text="Hide Collapse Sidebar button" FontSize="14" FontWeight="Medium" />
+                                    </ui:CardControl.Header>
+                                    <ui:ToggleSwitch IsChecked="{Binding HideCollapseButton}" />
+                                </ui:CardControl>
+
+                                <ui:CardControl Style="{StaticResource WinUiSettingsCard}" Icon="{ui:SymbolIcon PanelLeft24}">
+                                    <ui:CardControl.Header>
+                                        <TextBlock Text="Hide Split Mode button" FontSize="14" FontWeight="Medium" />
+                                    </ui:CardControl.Header>
+                                    <ui:ToggleSwitch IsChecked="{Binding HideSplitModeButton}" />
+                                </ui:CardControl>
+
+                                <ui:CardControl Style="{StaticResource WinUiSettingsCard}" Icon="{ui:SymbolIcon PanelLeft24}">
+                                    <ui:CardControl.Header>
+                                        <TextBlock Text="Hide Settings button" FontSize="14" FontWeight="Medium" />
+                                    </ui:CardControl.Header>
+                                    <ui:ToggleSwitch IsChecked="{Binding HideSettingsButton}" />
+                                </ui:CardControl>
+
+                                <ui:CardControl Style="{StaticResource WinUiSettingsCard}" Icon="{ui:SymbolIcon PanelLeft24}">
+                                    <ui:CardControl.Header>
+                                        <TextBlock Text="Hide Downloads button" FontSize="14" FontWeight="Medium" />
+                                    </ui:CardControl.Header>
+                                    <ui:ToggleSwitch IsChecked="{Binding HideDownloadButton}" />
+                                </ui:CardControl>
+
+                                <ui:CardControl Style="{StaticResource WinUiSettingsCard}" Icon="{ui:SymbolIcon Grid24}">
+                                    <ui:CardControl.Header>
+                                        <TextBlock Text="Always show Workspaces drawer" FontSize="14" FontWeight="Medium" />
+                                    </ui:CardControl.Header>
+                                    <ui:ToggleSwitch IsChecked="{Binding AlwaysShowWorkspaces}" />
+                                </ui:CardControl>
+
+                                <ui:CardControl Style="{StaticResource WinUiSettingsCard}"
+                                                Icon="{ui:SymbolIcon Grid24}"
+                                                Visibility="{Binding AlwaysShowWorkspaces, Converter={StaticResource BoolToVisibility}}">
+                                    <ui:CardControl.Header>
+                                        <TextBlock Text="Use compact Workspaces drawer" FontSize="14" FontWeight="Medium" />
+                                    </ui:CardControl.Header>
+                                    <ui:ToggleSwitch IsChecked="{Binding UseCompactWorkspaceDrawer}" />
+                                </ui:CardControl>
+
+                                <ui:CardControl Style="{StaticResource WinUiSettingsCard}" Icon="{ui:SymbolIcon PanelLeft24}">
+                                    <ui:CardControl.Header>
                                         <TextBlock Text="Hide 'All Services' workspace" FontSize="14" FontWeight="Medium" />
                                     </ui:CardControl.Header>
                                     <ui:ToggleSwitch IsChecked="{Binding HideAllServicesWorkspace}" />
@@ -1480,6 +2064,21 @@
                                         </StackPanel>
                                     </ui:CardControl.Header>
                                     <ui:ToggleSwitch IsChecked="{Binding IsLockingFeatureEnabled}" />
+                                </ui:CardControl>
+
+                                <ui:CardControl Style="{StaticResource WinUiSettingsCard}"
+                                                Icon="{ui:SymbolIcon LockClosed24}"
+                                                Visibility="{Binding IsLockingFeatureEnabled, Converter={StaticResource BoolToVisibility}}">
+                                    <ui:CardControl.Header>
+                                        <StackPanel>
+                                            <TextBlock Text="App Lock Password" FontSize="14" FontWeight="Medium" />
+                                            <TextBlock Text="Set or update the password used to lock Ferdium" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                        </StackPanel>
+                                    </ui:CardControl.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <ui:TextBox Width="180" PlaceholderText="Enter password..." Text="{Binding NewAppLockPassword, UpdateSourceTrigger=PropertyChanged}" />
+                                        <ui:Button Appearance="Secondary" Margin="8,0,0,0" Content="Save" Command="{Binding SaveAppLockPasswordCommand}" />
+                                    </StackPanel>
                                 </ui:CardControl>
 
                                 <ui:CardControl Style="{StaticResource WinUiSettingsCard}"
@@ -1946,7 +2545,7 @@
         <!-- 1. Quick Switch (Ctrl+K) Command Palette -->
         <Grid Grid.Row="0"
               Grid.RowSpan="2"
-              Background="#66000000"
+              Background="#3D000000"
               Visibility="{Binding IsQuickSwitchOpen, Converter={StaticResource BoolToVisibility}}"
               MouseDown="OverlayBackdrop_MouseDown">
             <Border Width="540"
@@ -2081,7 +2680,7 @@
         <!-- 2. Add Service Catalog Dialog -->
         <Grid Grid.Row="0"
               Grid.RowSpan="2"
-              Background="#66000000"
+              Background="#3D000000"
               Visibility="{Binding IsAddServiceOpen, Converter={StaticResource BoolToVisibility}}"
               MouseDown="OverlayBackdrop_MouseDown">
             <Border Width="740"
@@ -2126,8 +2725,12 @@
                                             PlaceholderText="Search WhatsApp, Slack, Discord, Gmail, Notion..."
                                             Text="{Binding CatalogSearchQuery, UpdateSourceTrigger=PropertyChanged}" />
 
-                    <ScrollViewer Grid.Row="2" MaxHeight="340" Padding="0,0,8,0">
-                        <ItemsControl ItemsSource="{Binding CatalogResults}">
+                    <ScrollViewer Grid.Row="2"
+                                  MaxHeight="340"
+                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  PreviewMouseWheel="SettingsScrollViewer_PreviewMouseWheel">
+                        <ItemsControl ItemsSource="{Binding CatalogResults}" Margin="0,0,18,4">
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate>
                                     <UniformGrid Columns="3" />
@@ -2198,7 +2801,7 @@
         <!-- 3. Workspaces Dialog -->
         <Grid Grid.Row="0"
               Grid.RowSpan="2"
-              Background="#66000000"
+              Background="#3D000000"
               Visibility="{Binding IsWorkspacesOpen, Converter={StaticResource BoolToVisibility}}"
               MouseDown="OverlayBackdrop_MouseDown">
             <Border Width="460"
@@ -2236,8 +2839,12 @@
                         </ui:Button>
                     </Grid>
 
-                    <ScrollViewer Grid.Row="1" MaxHeight="300" Padding="0,0,6,0">
-                        <ItemsControl ItemsSource="{Binding Workspaces}">
+                    <ScrollViewer Grid.Row="1"
+                                  MaxHeight="300"
+                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  PreviewMouseWheel="SettingsScrollViewer_PreviewMouseWheel">
+                        <ItemsControl ItemsSource="{Binding Workspaces}" Margin="0,0,18,4">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
                                     <Grid Margin="0,2">
@@ -2299,7 +2906,7 @@
         <!-- 4. Share Login Session Dialog -->
         <Grid Grid.Row="0"
               Grid.RowSpan="2"
-              Background="#66000000"
+              Background="#3D000000"
               Visibility="{Binding IsSessionShareOpen, Converter={StaticResource BoolToVisibility}}"
               MouseDown="OverlayBackdrop_MouseDown">
             <Border Width="480"
@@ -2343,8 +2950,12 @@
                         </ui:Button>
                     </Grid>
 
-                    <ScrollViewer Grid.Row="1" MaxHeight="340" Padding="0,0,6,0">
-                        <ItemsControl ItemsSource="{Binding SessionShareOptions}">
+                    <ScrollViewer Grid.Row="1"
+                                  MaxHeight="340"
+                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  PreviewMouseWheel="SettingsScrollViewer_PreviewMouseWheel">
+                        <ItemsControl ItemsSource="{Binding SessionShareOptions}" Margin="0,0,18,4">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
                                     <ui:Button Style="{StaticResource WinUiSubtleButton}"
@@ -2418,7 +3029,7 @@
         <!-- 5. Edit Service / Configure New Service / Add Another Account Dialog -->
         <Grid Grid.Row="0"
               Grid.RowSpan="2"
-              Background="#66000000"
+              Background="#3D000000"
               Visibility="{Binding IsEditServiceOpen, Converter={StaticResource BoolToVisibility}}"
               MouseDown="OverlayBackdrop_MouseDown">
             <Border Width="540"
@@ -2496,8 +3107,9 @@
                     <!-- Scrollable Options Body -->
                     <ScrollViewer Grid.Row="1"
                                   VerticalScrollBarVisibility="Auto"
-                                  Padding="0,0,8,0">
-                        <StackPanel>
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  PreviewMouseWheel="SettingsScrollViewer_PreviewMouseWheel">
+                        <StackPanel Margin="0,0,18,4">
                             <!-- Identity & Account -->
                             <TextBlock Text="Service Name" FontSize="12.5" FontWeight="SemiBold" Margin="0,0,0,6" />
                             <ui:TextBox PlaceholderText="e.g. Instagram"
@@ -2800,6 +3412,11 @@
 
                                         <CheckBox IsChecked="{Binding EditRelockOnSystemSuspend}"
                                                   Content="Re-lock when Windows sleeps or locks"
+                                                  FontSize="12.5"
+                                                  Margin="0,0,0,6" />
+
+                                        <CheckBox IsChecked="{Binding EditHideNotificationContentWhenLocked}"
+                                                  Content="Hide notification content while locked"
                                                   FontSize="12.5" />
                                     </StackPanel>
 
@@ -2912,6 +3529,45 @@
                                Margin="0,12,0,0"
                                Content="Cancel"
                                Command="{Binding CloseAllOverlaysCommand}" />
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- Global App Password Lock Overlay -->
+        <Grid Grid.Row="0"
+              Grid.RowSpan="2"
+              Background="#CC000000"
+              Visibility="{Binding IsAppLocked, Converter={StaticResource BoolToVisibility}}">
+            <Border Width="380"
+                    VerticalAlignment="Center"
+                    CornerRadius="8"
+                    Padding="28"
+                    BorderThickness="1"
+                    BorderBrush="{DynamicResource SurfaceStrokeColorFlyoutBrush}"
+                    Background="{DynamicResource SolidBackgroundFillColorQuarternaryBrush}">
+                <StackPanel>
+                    <ui:SymbolIcon Symbol="LockClosed24" FontSize="36" Margin="0,0,0,12" HorizontalAlignment="Center" />
+                    <TextBlock Text="Ferdium is Locked"
+                               FontSize="20"
+                               FontWeight="SemiBold"
+                               HorizontalAlignment="Center" />
+                    <TextBlock Text="Enter your password to unlock"
+                               FontSize="12.5"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                               HorizontalAlignment="Center"
+                               Margin="0,4,0,16" />
+                    <ui:TextBox PlaceholderText="Password"
+                                Text="{Binding AppLockPasswordInput, UpdateSourceTrigger=PropertyChanged}"
+                                Margin="0,0,0,10" />
+                    <TextBlock Text="{Binding AppLockErrorText}"
+                               Foreground="#FF6B72"
+                               FontSize="12"
+                               HorizontalAlignment="Center"
+                               Margin="0,0,0,10" />
+                    <ui:Button Appearance="Primary"
+                               HorizontalAlignment="Stretch"
+                               Content="Unlock"
+                               Command="{Binding UnlockAppCommand}" />
                 </StackPanel>
             </Border>
         </Grid>
